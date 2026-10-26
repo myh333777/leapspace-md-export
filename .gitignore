@@ -11,6 +11,9 @@ browser_data/
 results/
 private/
 node_modules/
+__pycache__/
+*.pyc
+*.png
 *.session
 *conversation*.md
 *数据要素市场化*.md

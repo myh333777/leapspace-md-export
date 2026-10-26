@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.5.2
-// @description  轻量快捷导出学术综述，设置自动记忆；完整文献、摘要和编号引用保留。
+// @version      1.6.0
+// @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
 // @match        https://www.sciencedirect.com/researcher-ai*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.5.2';
+  const VERSION = '1.6.0';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -823,6 +823,237 @@
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
+
+  // Conversation history cleanup operates through LeapSpace's own visible UI only.
+  // It NEVER calls undocumented network endpoints or deletes without a user preview.
+  const HISTORY_COUNT_KEY = 'ls-academic-md-exporter.history-count.v1';
+  const HISTORY_ITEM_RE = /^\/leapspace\/conversation\/([0-9a-z-]{16,})\/?$/i;
+  const HISTORY_LIMIT = 500;
+
+  function historyIdentity(link) {
+    const href = link?.getAttribute?.('href');
+    if (!href) return null;
+    try {
+      const url = new URL(href, location.href);
+      if (url.origin !== location.origin) return null;
+      const match = url.pathname.match(HISTORY_ITEM_RE);
+      return match ? {id:match[1], href:url.pathname, title:(link.getAttribute('aria-label') || link.getAttribute('title') || link.textContent || '').replace(/\s+/g,' ').trim().slice(0,160)} : null;
+    } catch { return null; }
+  }
+
+  function historyScope() {
+    const nav = document.querySelector('[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]');
+    if (!nav) throw new Error('尚未识别左侧会话栏；请在 LeapSpace 登录并展开侧栏。');
+    const regions = Array.from(nav.querySelectorAll('[role="region"],section,[data-testid]'));
+    const region = regions.find(node => /^(Conversations|会话|聊天记录)$/i.test(node.getAttribute('aria-label') || ''))
+      || regions.find(node => /conversation(?:s|-list)|历史会话/i.test(node.getAttribute('data-testid') || ''));
+    // Older LeapSpace builds expose links directly below the navigation tree.
+    const scope = region || nav;
+    if (/error loading conversations|unable to load conversations|加载会话.*失败|会话.*加载失败/i.test(scope.textContent || '')) {
+      throw new Error('网站会话列表加载失败，未执行任何删除。');
+    }
+    return {nav, scope};
+  }
+
+  function visibleHistoryAnchors(scope) {
+    const found = new Map();
+    for (const a of scope.querySelectorAll('a[href]')) {
+      const item = historyIdentity(a);
+      if (item && !found.has(item.id)) found.set(item.id,{...item,anchor:a});
+    }
+    return [...found.values()];
+  }
+
+  function historyListMore(scope) {
+    const pattern = /^(?:load more(?: conversations)?|show more(?: conversations)?|view (?:more|all)(?: conversations)?|see (?:more|all)(?: conversations)?|load older(?: conversations)?|show older(?: conversations)?|older conversations|加载更多(?:会话)?|查看更多(?:会话)?|更多会话|显示更多(?:会话)?|查看全部(?:会话)?)$/i;
+    return [...scope.querySelectorAll('button,[role="button"],a')]
+      .find(el => historyVisible(el) && pattern.test((el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g,' ').trim())) || null;
+  }
+
+  function historyScroller(scope,nav) {
+    for (const node of [scope,...Array.from(scope.querySelectorAll('*')).slice(0,80),nav]) {
+      if (!node || node.scrollHeight <= node.clientHeight + 20) continue;
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null;
+      if (!style || /auto|scroll|overlay/i.test(style.overflowY)) return node;
+    }
+    return null;
+  }
+
+  const historyDelay = (ms,signal) => new Promise((resolve,reject) => {
+    if (signal?.aborted) return reject(new Error('操作已停止。'));
+    const waitMs=window.__LS_MD_EXPORT_TEST__===true ? Math.min(ms,12) : ms;
+    const timer=setTimeout(() => {signal?.removeEventListener('abort',onAbort);resolve();},waitMs);
+    function onAbort(){clearTimeout(timer);reject(new Error('操作已停止。'));}
+    signal?.addEventListener('abort',onAbort,{once:true});
+  });
+
+  async function historySnapshot(mode,count,progress,signal) {
+    if (!/^\/(?:leapspace|researcher-ai)(?:\/|$)/.test(location.pathname)) throw new Error('请先打开 LeapSpace。');
+    if (mode !== 'recent' && mode !== 'all') throw new Error('未知清理范围。');
+    const target = mode === 'recent' ? Math.min(500,Math.max(1,Math.floor(Number(count)||50))) : HISTORY_LIMIT;
+    const {nav,scope} = historyScope();
+    if (!visibleHistoryAnchors(scope).length) {
+      const toggle=nav.querySelector('button[aria-label="Toggle sidebar"]');
+      if (toggle) {toggle.click(); await historyDelay(220,signal);}
+    }
+    const originalScroll = historyScroller(scope,nav);
+    const scrollStart = originalScroll?.scrollTop || 0;
+    const seen = new Map();
+    let idle = 0, complete = false, capped = false;
+    for(let step=0;step<140;step++) {
+      if (signal?.aborted) throw new Error('已取消扫描。');
+      const {nav:liveNav,scope:liveScope}=historyScope();
+      for (const item of visibleHistoryAnchors(liveScope)) if (!seen.has(item.id)) seen.set(item.id,{id:item.id,href:item.href,title:item.title});
+      progress?.('找到 '+seen.size+' 条会话，正在核对列表…');
+      if (mode==='recent' && seen.size>=target) {complete=true;break;}
+      if(seen.size>=HISTORY_LIMIT) {capped=true;break;}
+      const more=historyListMore(liveScope);
+      const scroller=historyScroller(liveScope,liveNav);
+      let moved=false;
+      if (more) {more.click();moved=true;}
+      else if (scroller) {
+        const before=scroller.scrollTop;
+        scroller.scrollTop=Math.min(scroller.scrollHeight,scroller.scrollTop+Math.max(350,scroller.clientHeight*.8));
+        moved=scroller.scrollTop>before+2;
+      }
+      if (!moved) idle++; else idle=0;
+      if (idle>=3) {complete=true;break;}
+      await historyDelay(more ? 270 : 160,signal);
+    }
+    if (originalScroll?.isConnected) originalScroll.scrollTop=scrollStart;
+    const rows=[...seen.values()];
+    if (!rows.length) throw new Error('未找到可识别的会话链接，未执行删除。');
+    const selected=mode==='recent' ? rows.slice(0,target) : rows;
+    const incomplete=mode==='all' && (!complete || capped || !!historyListMore(historyScope().scope));
+    if (incomplete) throw new Error('“全部”范围尚未完整加载（已识别至少 '+seen.size+' 条），为避免漏删已停止。');
+    if (mode==='recent' && selected.length<target && !complete) throw new Error('未完整读取最近 '+target+' 条会话，未删除。');
+    return {mode,requested:target,items:selected,available:rows.length,complete:complete && !capped};
+  }
+
+  function historyRow(anchor,nav) {
+    for (let parent=anchor?.parentElement,depth=0;parent && parent!==nav && depth<9;parent=parent.parentElement,depth++) {
+      const count=visibleHistoryAnchors(parent).length;
+      if (count!==1) continue;
+      if (parent.matches('li,[role="listitem"],[data-testid*="conversation-item"],[class*="conversationItem"]')) return parent;
+      if (parent.querySelector('button,[role="button"]')) return parent;
+    }
+    return null;
+  }
+
+  function historyRowById(id) {
+    const {nav,scope}=historyScope();
+    const item=visibleHistoryAnchors(scope).find(it=>it.id===id);
+    return item ? historyRow(item.anchor,nav) : null;
+  }
+
+  async function historyFindRow(id,signal) {
+    let row=historyRowById(id);
+    if (row) return row;
+    const {nav,scope}=historyScope();
+    const scroller=historyScroller(scope,nav);
+    if (scroller) scroller.scrollTop=0;
+    for(let i=0;i<75;i++) {
+      await historyDelay(150,signal);
+      row=historyRowById(id);
+      if(row) return row;
+      const {nav:liveNav,scope:liveScope}=historyScope();
+      const more=historyListMore(liveScope);
+      const s=historyScroller(liveScope,liveNav);
+      if(more) more.click();
+      else if(s && s.scrollTop+s.clientHeight<s.scrollHeight-5) s.scrollTop=Math.min(s.scrollHeight,s.scrollTop+Math.max(350,s.clientHeight*.8));
+      else break;
+    }
+    return null;
+  }
+
+  function historyAccessibleName(node) {
+    return (node?.getAttribute?.('aria-label')||node?.getAttribute?.('title')||node?.textContent||'').replace(/\s+/g,' ').trim();
+  }
+
+  function historyVisible(node) {
+    if (!node?.isConnected) return false;
+    const style=getComputedStyle(node);
+    return style.display!=='none' && style.visibility!=='hidden' && !!node.getClientRects().length;
+  }
+
+  function historyMenuControl(row) {
+    const buttons=[...row.querySelectorAll('button,[role="button"]')];
+    const identified=buttons.filter(b=>/more(?: options| actions)?|options|actions|ellipsis|更多|操作|菜单/i.test(historyAccessibleName(b))
+      || b.getAttribute('aria-haspopup')==='menu' || /more|menu|options/i.test(b.getAttribute('data-testid')||''));
+    // Destructive actions must be attached to an explicitly identified menu control.
+    // Never guess that an unlabeled icon represents an action menu.
+    return identified.length===1 ? identified[0] : null;
+  }
+
+  function historyDeleteAction(previouslyVisibleMenus) {
+    // Never choose an unrelated, already-open context menu elsewhere on the page.
+    const roots=[...document.querySelectorAll('[role="menu"],[data-radix-menu-content]')]
+      .filter(root=>historyVisible(root) && !previouslyVisibleMenus.has(root));
+    const nodes=roots.flatMap(root=>[...root.querySelectorAll('[role="menuitem"],button')]);
+    const found=nodes.filter(el=>historyVisible(el) && /^(?:delete|delete conversation|remove conversation|删除|删除对话|删除会话)$/i.test(historyAccessibleName(el)));
+    return found.length===1 ? found[0] : null;
+  }
+
+  function historyConfirmation() {
+    const dialogs=[...document.querySelectorAll('[role="alertdialog"],[role="dialog"]')].filter(d=>!d.closest('#'+APP_ID) && historyVisible(d)
+      && /delete|remove|删除/i.test(d.textContent||''));
+    if(dialogs.length!==1) return null;
+    const d=dialogs[0];
+    const acts=[...d.querySelectorAll('button,[role="button"]')].filter(b=>historyVisible(b)
+      && /^(?:delete|delete conversation|yes, delete|confirm delete|删除|确认删除)$/i.test(historyAccessibleName(b)));
+    return acts.length===1 ? acts[0] : null;
+  }
+
+  async function historyDeleteOne(item,signal) {
+    const row=await historyFindRow(item.id,signal);
+    if (!row) throw new Error('未找到原定会话“'+(item.title||item.id)+'”；停止，避免误删其他会话。');
+    const current=visibleHistoryAnchors(row).find(a=>a.id===item.id);
+    if(!current) throw new Error('会话身份变化，停止删除。');
+    row.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+    await historyDelay(80,signal);
+    const control=historyMenuControl(row);
+    if (!control) throw new Error('当前页面未识别会话操作菜单；没有删除任何新的条目。');
+    const existingMenus=new Set([...document.querySelectorAll('[role="menu"],[data-radix-menu-content]')].filter(historyVisible));
+    control.click();
+    await historyDelay(140,signal);
+    const action=historyDeleteAction(existingMenus);
+    if(!action) throw new Error('未找到唯一的“删除会话”操作，已中止，不会猜测按钮。');
+    action.click();
+    let modalConfirmed=false;
+    for(let i=0;i<45;i++) {
+      if(!historyRowById(item.id)) return true;
+      const conf=historyConfirmation();
+      if(conf && !modalConfirmed) {
+        conf.click();modalConfirmed=true;
+        // Count a deletion that was already reflected in the list even when
+        // the user presses Stop immediately after this site confirmation.
+        if(!historyRowById(item.id)) return true;
+      }
+      await historyDelay(170,signal);
+    }
+    throw new Error('无法确认会话已从列表消失（可能正在等待网站确认），已停止后续删除；请核对当前页面。');
+  }
+
+  async function historyExecute(plan,progress,signal) {
+    if (!plan?.items?.length || !['recent','all'].includes(plan.mode)) throw new Error('没有有效的预览清单。');
+    // Freeze all target IDs before deletion. Moving the currently open chat to the end
+    // prevents navigation away from interrupting the remaining work.
+    const active=location.pathname.match(HISTORY_ITEM_RE)?.[1]||'';
+    const ordered=[...plan.items].sort((a,b)=>(a.id===active)-(b.id===active));
+    let completed=0;
+    for (const item of ordered) {
+      if(signal?.aborted) return {completed,total:ordered.length,stopped:true};
+      try{
+        await historyDeleteOne(item,signal);
+      }catch(err){
+        return {completed,total:ordered.length,stopped:true,error:String(err?.message||err)};
+      }
+      completed++;
+      progress?.(completed,ordered.length,item);
+    }
+    return {completed,total:ordered.length,stopped:false};
+  }
+
   // Minimal panel: one primary action and an optional preferences popover.
   // Preferences contain only non-sensitive booleans; no conversation data is stored.
   const SETTINGS_KEY = 'ls-academic-md-exporter.preferences.v1';
@@ -885,14 +1116,35 @@
 #${APP_ID} .ls-option input:checked{background:#265e80}#${APP_ID} .ls-option input:checked:before{transform:translateX(12px)}
 #${APP_ID} .ls-option input:disabled{cursor:default}
 #${APP_ID} .ls-settings-foot{border-top:1px solid #edf0f4;margin-top:7px;padding-top:10px;display:flex;align-items:center;justify-content:space-between}
+#${APP_ID} .ls-history-entry{border-top:1px solid #edf0f4;margin-top:7px;padding-top:9px}
+#${APP_ID} .ls-history-entry button{width:100%;justify-content:flex-start;padding:5px 2px;color:#a43435;font-weight:500;font-size:12px}
+#${APP_ID} .ls-history-dialog{position:fixed;bottom:69px;right:17px;width:348px;max-width:calc(100vw - 22px);max-height:min(76vh,590px);overflow:auto;padding:13px;background:#fff;border:1px solid #d7dee6;border-radius:12px;box-shadow:0 10px 35px rgba(26,46,66,.17);color:#304155}
+#${APP_ID} .ls-history-dialog[hidden]{display:none!important}
+#${APP_ID} .ls-history-head{display:flex;align-items:center;justify-content:space-between;font-weight:700;font-size:13px;margin-bottom:9px}
+#${APP_ID} .ls-history-close{font-size:19px!important;width:22px;height:22px;color:#768395}
+#${APP_ID} .ls-history-choice{display:flex;align-items:center;gap:6px;padding:6px 0;font-size:12px}
+#${APP_ID} .ls-history-choice input[type=number]{width:68px;padding:4px 5px;border:1px solid #cbd5e1;border-radius:6px;background:transparent;color:inherit}
+#${APP_ID} .ls-history-info{color:#718096;font-size:11px;line-height:1.5;margin:6px 0}
+#${APP_ID} .ls-history-status{font-size:11px;line-height:1.5;padding:6px 0;white-space:normal;overflow-wrap:anywhere}
+#${APP_ID} .ls-history-status.error{color:#b42318}
+#${APP_ID} .ls-history-preview-list{max-height:135px;overflow:auto;margin:6px 0;padding-left:19px;font-size:11px;color:#66758a}
+#${APP_ID} .ls-history-preview-list li{padding:1px 0;overflow-wrap:anywhere}
+#${APP_ID} .ls-history-ack,#${APP_ID} .ls-history-phrase{font-size:11px;display:flex;gap:6px;align-items:center;margin:8px 0}
+#${APP_ID} .ls-history-phrase input{width:115px;min-width:0;padding:4px 6px;border:1px solid #d5dbe4;border-radius:6px;background:transparent;color:inherit}
+#${APP_ID} .ls-history-actions{display:flex;align-items:center;gap:7px;margin-top:10px}
+#${APP_ID} .ls-history-actions button{padding:7px 10px;border-radius:7px;border:1px solid #ccd4df;color:#34465c}
+#${APP_ID} .ls-history-actions .ls-history-confirm{background:#a22b2b;color:#fff;border-color:#a22b2b}
+#${APP_ID} .ls-history-actions button:disabled{opacity:.4;cursor:default}
+#${APP_ID} .ls-history-actions [hidden],#${APP_ID} .ls-history-ack[hidden],#${APP_ID} .ls-history-phrase[hidden]{display:none!important}
+
 #${APP_ID} .ls-copy{padding:4px 0!important;color:#255f80;font-weight:600}
 #${APP_ID} .ls-copy:hover{text-decoration:underline}
 #${APP_ID} .ls-note{font-size:10px;color:#9aa4b2}
 #${APP_ID} .ls-toast{position:absolute;right:0;bottom:calc(100% + 9px);max-width:min(295px,calc(100vw - 22px));min-width:155px;background:#fff;border:1px solid #d7dee6;border-radius:9px;padding:8px 10px;box-shadow:0 4px 16px rgba(20,38,58,.12);font:11px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#496175;white-space:normal;overflow-wrap:anywhere}
 #${APP_ID} .ls-toast.error{color:#b42318;border-color:#efb2ae}
 #${APP_ID} .ls-toast.ok{color:#23513f}
-@media(max-width:650px){#${APP_ID}{right:9px;bottom:10px}}
-@media(prefers-color-scheme:dark){#${APP_ID} .ls-bar,#${APP_ID} .ls-settings,#${APP_ID} .ls-toast{background:#1e2631;border-color:#435163;box-shadow:0 5px 20px rgba(0,0,0,.3)}#${APP_ID} .ls-option,#${APP_ID} .ls-heading{color:#e4ebf3}#${APP_ID} .ls-download{background:#316581}#${APP_ID} .ls-download:hover{background:#427b9a}#${APP_ID} .ls-settings-btn{color:#bdc8d3}#${APP_ID} .ls-settings-btn:hover,#${APP_ID} .ls-settings-btn[aria-expanded=true]{background:#324558}#${APP_ID} .ls-settings-foot{border-color:#46505f}#${APP_ID} .ls-copy{color:#9dccea}#${APP_ID} .ls-toast{color:#d3dce6}#${APP_ID} .ls-toast.ok{color:#9dd5b5}#${APP_ID} .ls-toast.error{color:#ffb3a8}}
+@media(max-width:650px){#${APP_ID}{right:9px;bottom:10px}#${APP_ID} .ls-history-dialog{right:9px;bottom:61px}}
+@media(prefers-color-scheme:dark){#${APP_ID} .ls-bar,#${APP_ID} .ls-settings,#${APP_ID} .ls-toast{background:#1e2631;border-color:#435163;box-shadow:0 5px 20px rgba(0,0,0,.3)}#${APP_ID} .ls-option,#${APP_ID} .ls-heading{color:#e4ebf3}#${APP_ID} .ls-download{background:#316581}#${APP_ID} .ls-download:hover{background:#427b9a}#${APP_ID} .ls-settings-btn{color:#bdc8d3}#${APP_ID} .ls-settings-btn:hover,#${APP_ID} .ls-settings-btn[aria-expanded=true]{background:#324558}#${APP_ID} .ls-settings-foot,#${APP_ID} .ls-history-entry{border-color:#46505f}#${APP_ID} .ls-history-dialog{background:#1e2631;border-color:#435163;color:#dce5ef}#${APP_ID} .ls-history-preview-list,#${APP_ID} .ls-history-info{color:#a5b4c5}#${APP_ID} .ls-copy{color:#9dccea}#${APP_ID} .ls-toast{color:#d3dce6}#${APP_ID} .ls-toast.ok{color:#9dd5b5}#${APP_ID} .ls-toast.error{color:#ffb3a8}}
 </style>
 <div class="ls-bar">
  <button type="button" class="ls-download" title="导出当前会话为 Markdown" aria-label="导出 Markdown">
@@ -908,6 +1160,18 @@
  <label class="ls-option"><span>精简链接</span><input type="checkbox" class="ls-compact" data-pref="compact" aria-label="精简参考文献链接"></label>
  <label class="ls-option"><span>YAML 元数据</span><input type="checkbox" class="ls-yaml" data-pref="yaml" aria-label="包含 YAML 元数据"></label>
  <div class="ls-settings-foot"><button type="button" class="ls-copy" title="复制当前对话为 Markdown">复制 MD</button><span class="ls-note">自动记住设置</span></div>
+ <div class="ls-history-entry"><button type="button" class="ls-manage-history">清理聊天记录…</button></div>
+</div>
+<div class="ls-history-dialog" role="dialog" aria-label="管理 LeapSpace 聊天记录" hidden>
+ <div class="ls-history-head"><span>清理聊天记录</span><button type="button" class="ls-history-close" aria-label="关闭清理">×</button></div>
+ <label class="ls-history-choice"><input type="radio" name="ls-history-mode" value="recent" checked> 最近 <input class="ls-history-count" type="number" min="1" max="500" step="1" value="50" aria-label="删除最近几条"> 条</label>
+ <label class="ls-history-choice"><input type="radio" name="ls-history-mode" value="all"> 全部可加载的会话</label>
+ <div class="ls-history-info">按左侧会话列表由新到旧；先预览再删除。删除可能无法恢复，不使用隐藏接口。</div>
+ <div class="ls-history-status" role="status" aria-live="polite">先检查待删范围。</div>
+ <ol class="ls-history-preview-list"></ol>
+ <label class="ls-history-ack" hidden><input type="checkbox" class="ls-history-ack-input"> 我理解记录删除后可能无法恢复</label>
+ <label class="ls-history-phrase" hidden>输入“删除全部”<input type="text" class="ls-history-phrase-input" autocomplete="off"></label>
+ <div class="ls-history-actions"><button type="button" class="ls-history-scan">预览</button><button type="button" class="ls-history-confirm" disabled>确认删除</button><button type="button" class="ls-history-stop" hidden>停止</button></div>
 </div>
 <div class="ls-toast" role="status" aria-live="polite" hidden></div>`;
     document.body.append(el);
@@ -930,6 +1194,8 @@
       settingsBtn.setAttribute('aria-expanded','false');
     };
     const openSettings = () => {
+      if (historyRunning) return;
+      if (!historyEl.hidden) closeHistory();
       if (!settingsEl.hidden) { closeSettings(); return; }
       toast.hidden = true;
       clearTimeout(toastTimer);
@@ -954,6 +1220,144 @@
       notice(txt.length > 85 ? txt.slice(0, 82) + '…' : txt);
     };
 
+
+    // Destructive history controls are intentionally nested under Settings and
+    // remain inert until the user previews, accepts the loss, and confirms.
+    const historyEl=el.querySelector('.ls-history-dialog');
+    const historyStatus=el.querySelector('.ls-history-status');
+    const historyList=el.querySelector('.ls-history-preview-list');
+    const historyCount=el.querySelector('.ls-history-count');
+    const historyAck=el.querySelector('.ls-history-ack-input');
+    const historyPhrase=el.querySelector('.ls-history-phrase-input');
+    const historyConfirm=el.querySelector('.ls-history-confirm');
+    const historyScanButton=el.querySelector('.ls-history-scan');
+    const historyStopButton=el.querySelector('.ls-history-stop');
+    let historyPlan=null, historyController=null, historyRunning=false;
+    try {
+      const value=typeof GM_getValue==='function' ? GM_getValue(HISTORY_COUNT_KEY,50) : localStorage.getItem(HISTORY_COUNT_KEY);
+      const n=Number(value);
+      if(Number.isInteger(n) && n>=1 && n<=500) historyCount.value=String(n);
+    } catch {/* Count only; no private conversations are persisted. */}
+    const historyMode=()=>el.querySelector('input[name="ls-history-mode"]:checked')?.value||'recent';
+    const historyMessage=(msg,error=false)=>{
+      historyStatus.textContent=msg;
+      historyStatus.classList.toggle('error',Boolean(error));
+    };
+    const historyReady=()=> {
+      historyConfirm.disabled=!historyPlan || historyRunning || !historyAck.checked ||
+        (historyPlan.mode==='all' && historyPhrase.value.trim()!=='删除全部');
+    };
+    const invalidateHistory=()=>{
+      if(historyRunning) return;
+      historyPlan=null;
+      historyList.replaceChildren();
+      historyAck.checked=false;
+      historyPhrase.value='';
+      el.querySelector('.ls-history-ack').hidden=true;
+      el.querySelector('.ls-history-phrase').hidden=true;
+      historyMessage('先检查待删范围。');
+      historyReady();
+    };
+    function closeHistory(){
+      if(historyRunning) {
+        historyController?.abort();
+        historyMessage('正在停止。当前条目可能已提交删除，请等待核验…');
+        return;
+      }
+      historyController?.abort();
+      historyEl.hidden=true;
+    }
+    el.querySelector('.ls-manage-history').addEventListener('click',()=>{
+      closeSettings();
+      historyEl.hidden=false;
+      invalidateHistory();
+    });
+    el.querySelector('.ls-history-close').addEventListener('click',closeHistory);
+    for (const radio of el.querySelectorAll('input[name="ls-history-mode"]')) radio.addEventListener('change',invalidateHistory);
+    historyCount.addEventListener('change',()=>{
+      historyCount.value=String(Math.min(500,Math.max(1,Math.floor(Number(historyCount.value)||50))));
+      try {if(typeof GM_setValue==='function') GM_setValue(HISTORY_COUNT_KEY,Number(historyCount.value));}
+      catch {/* no-op */ }
+      try {localStorage.setItem(HISTORY_COUNT_KEY,historyCount.value);}catch {/* no-op */}
+      invalidateHistory();
+    });
+    historyAck.addEventListener('change',historyReady);
+    historyPhrase.addEventListener('input',historyReady);
+    historyStopButton.addEventListener('click',()=>{
+      historyController?.abort();
+      historyMessage('停止指令已发送；不会继续删除下一条。');
+    });
+    historyScanButton.addEventListener('click',async()=>{
+      if (busy || historyRunning) return;
+      busy=true;
+      buttons.forEach(b=>b.disabled=true);
+      historyScanButton.disabled=true;
+      historyController=new AbortController();
+      invalidateHistory();
+      try{
+        const mode=historyMode();
+        const count=historyCount.value;
+        historyPlan=await historySnapshot(mode,count,msg=>historyMessage(msg),historyController.signal);
+        historyList.replaceChildren();
+        historyPlan.items.slice(0,8).forEach((item,i)=>{
+          const li=document.createElement('li');
+          li.textContent=(i+1)+'. '+(item.title||'未命名会话');
+          historyList.append(li);
+        });
+        if(historyPlan.items.length>8){
+          const li=document.createElement('li');
+          li.textContent='…另外 '+(historyPlan.items.length-8)+' 条';
+          historyList.append(li);
+        }
+        historyMessage('待删除 '+historyPlan.items.length+' 条'+(mode==='all'?'（当前账户可完整读取的列表）':'（由新到旧）')+'。删除无法撤销。');
+        el.querySelector('.ls-history-ack').hidden=false;
+        el.querySelector('.ls-history-phrase').hidden=mode!=='all';
+      }catch(err){
+        historyMessage('扫描失败：'+String(err?.message||err),true);
+        historyPlan=null;
+      }finally{
+        busy=false;
+        buttons.forEach(b=>b.disabled=false);
+        historyScanButton.disabled=false;
+        historyReady();
+      }
+    });
+    historyConfirm.addEventListener('click',async()=>{
+      if (busy || !historyPlan || historyConfirm.disabled || !historyAck.checked) return;
+      if(historyPlan.mode==='all' && historyPhrase.value.trim()!=='删除全部') return;
+      const plan=historyPlan;
+      const confirmation='将删除当前 LeapSpace 账号中预览的 '+plan.items.length+' 条聊天记录。删除可能不可恢复。确定继续？';
+      if(!window.confirm(confirmation)) return;
+      historyRunning=true;
+      busy=true;
+      historyController=new AbortController();
+      buttons.forEach(b=>b.disabled=true);
+      historyScanButton.disabled=true;
+      historyConfirm.disabled=true;
+      historyStopButton.hidden=false;
+      let outcome;
+      try{
+        outcome=await historyExecute(plan,(done,total)=>{
+          historyMessage('已确认删除 '+done+'/'+total+' 条。停止按钮只阻止后续条目。');
+        },historyController.signal);
+      }catch(err){
+        outcome={completed:0,total:plan.items.length,stopped:true,error:String(err?.message||err)};
+      }finally{
+        historyRunning=false;
+        busy=false;
+        buttons.forEach(b=>b.disabled=false);
+        historyStopButton.hidden=true;
+        historyScanButton.disabled=false;
+        // The preview is consumed. A new deletion always requires a fresh scan.
+        historyPlan=null;
+        historyAck.checked=false;
+        historyConfirm.disabled=true;
+      }
+      const incomplete=outcome.stopped || outcome.completed!==outcome.total;
+      historyMessage((incomplete?'已停止':'已完成')+'：已确认删除 '+outcome.completed+'/'+outcome.total+' 条。'+
+        (outcome.error?' '+outcome.error:'')+' 如需继续请重新预览。',incomplete);
+    });
+
     for (const key of Object.keys(controls)) {
       controls[key].addEventListener('change', () => {
         prefs[key] = controls[key].checked;
@@ -970,11 +1374,13 @@
     const abort = new AbortController();
     // When a SPA unmounts/remounts the toolbar, discard previous global listeners.
     if (typeof window.__LS_MD_EXPORT_UI_DISPOSE__ === 'function') window.__LS_MD_EXPORT_UI_DISPOSE__();
-    window.__LS_MD_EXPORT_UI_DISPOSE__ = () => abort.abort();
+    window.__LS_MD_EXPORT_UI_DISPOSE__ = () => {abort.abort();historyController?.abort();};
     document.addEventListener('pointerdown', e => {
       if (!el.contains(e.target) && !settingsEl.hidden) closeSettings();
+      if (!el.contains(e.target) && !historyEl.hidden) closeHistory();
     }, {signal:abort.signal});
     document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !historyEl.hidden) {closeHistory();settingsBtn.focus();return;}
       if (e.key === 'Escape' && !settingsEl.hidden) {closeSettings();settingsBtn.focus();}
     }, {signal:abort.signal});
 
@@ -1025,6 +1431,6 @@
 
   // Test-only exposure: inert on real pages; no access to secrets or network.
   if (typeof window !== 'undefined' && window.__LS_MD_EXPORT_TEST__ === true) {
-    window.__LS_MD_EXPORT_API__ = {snapshot, buildMarkdown, safeFilename, tableMd, inline, getAnswers, readReferences, readAbstract, expandAbstracts, safeUrl, cleanUiText, scanCurrentConversation, academicReference, globalBibliography, formatOutline, displayTitle, readPreferences, savePreferences};
+    window.__LS_MD_EXPORT_API__ = {snapshot, buildMarkdown, safeFilename, tableMd, inline, getAnswers, readReferences, readAbstract, expandAbstracts, safeUrl, cleanUiText, scanCurrentConversation, academicReference, globalBibliography, formatOutline, displayTitle, readPreferences, savePreferences, historyIdentity, visibleHistoryAnchors, historyScope, historySnapshot, historyRow, historyMenuControl, historyDeleteAction, historyConfirmation, historyDeleteOne, historyExecute};
   }
 })();

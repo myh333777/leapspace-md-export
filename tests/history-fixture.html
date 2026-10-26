@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Synthetic LeapSpace Sidebar Fixture</title>
+<style>
+body{margin:0;font:14px Arial,sans-serif;color:#253348;background:#f8fafc}
+nav{width:290px;height:95vh;border-right:1px solid #ddd;background:white;padding:12px}
+#history-list{max-height:360px;overflow-y:auto;border:1px solid #e6edf4}
+li{position:relative;display:flex;align-items:center;justify-content:space-between;list-style:none;padding:5px;min-height:23px;gap:8px}
+li a{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:230px}
+button{cursor:pointer;padding:4px 6px}
+[role=menu]{position:fixed;z-index:500;top:120px;left:305px;padding:10px;background:#fff;box-shadow:0 2px 15px #aaa}
+[role=dialog]{position:fixed;z-index:1000;inset:30% auto auto 30%;padding:22px;background:#fff;border:1px solid #bbb;box-shadow:0 10px 30px #aaa}
+#more[hidden]{display:none}
+</style></head>
+<body>
+<nav data-testid="left-panel-nav" aria-label="Left Panel">
+  <section role="region" aria-label="Conversations">
+    <h3>Conversations</h3>
+    <ul id="history-list"></ul>
+    <button id="more" type="button" aria-label="Load more">Load more</button>
+  </section>
+</nav>
+<main><h1>Fixture only — no real chats</h1></main>
+<script>
+(() => {
+  const params=new URLSearchParams(location.search);
+  const total=Number(params.get('count')||75);
+  const unknown=params.get('unknown')==='1';
+  const broken=params.get('broken')==='1';
+  const list=document.getElementById('history-list');
+  const more=document.getElementById('more');
+  const records=Array.from({length:total},(_,i)=>({
+    id:'00000000-0000-4000-8000-'+String(i+1).padStart(12,'0'),
+    title:'Synthetic conversation '+String(i+1).padStart(3,'0')
+  }));
+  const state={records,deleted:[],rendered:0,menuClicks:0,modalClicks:0};
+  window.__TEST_HISTORY__=state;
+  if(broken) {document.querySelector('section').innerHTML='<p>Error loading conversations</p>';return;}
+  function clearPopups(){document.querySelectorAll('[data-test-site-popup]').forEach(e=>e.remove());}
+  function confirmDelete(row,record){
+    clearPopups();
+    const d=document.createElement('div'); d.setAttribute('role','dialog'); d.setAttribute('data-test-site-popup','');
+    const info=document.createElement('p');info.textContent='Delete conversation '+record.title+'? This cannot be undone.';
+    const cancel=document.createElement('button');cancel.textContent='Cancel';cancel.onclick=clearPopups;
+    const del=document.createElement('button');del.textContent='Delete';
+    del.onclick=()=>{row.remove();state.deleted.push(record.id);state.modalClicks++;clearPopups();if(state.deleted.length===Number(window.__TEST_STOP_AFTER))document.querySelector('.ls-history-stop')?.click();};
+    d.append(info,cancel,del);document.body.append(d);
+  }
+  function showMenu(row,record){
+    clearPopups();state.menuClicks++;
+    const m=document.createElement('div');m.setAttribute('role','menu');m.setAttribute('data-test-site-popup','');
+    const rename=document.createElement('button');rename.setAttribute('role','menuitem');rename.textContent='Rename';
+    const del=document.createElement('button');del.setAttribute('role','menuitem');del.textContent='Delete';
+    del.onclick=()=>confirmDelete(row,record);
+    m.append(rename,del);document.body.append(m);
+  }
+  function addRows(){
+    const from=state.rendered,to=Math.min(total,from+10);
+    records.slice(from,to).forEach(record=>{
+      const li=document.createElement('li');
+      const a=document.createElement('a');a.href='/leapspace/conversation/'+record.id;a.textContent=record.title;
+      const action=document.createElement('button');action.type='button';
+      action.setAttribute('aria-label',unknown?'Unrecognised action':'More options');
+      action.textContent='⋯'; action.onclick=()=>showMenu(li,record);
+      li.append(a,action);list.append(li);
+    });
+    state.rendered=to;
+    more.hidden=state.rendered>=total;
+  }
+  more.addEventListener('click',addRows);
+  addRows();
+})();
+</script>
+</body></html>
