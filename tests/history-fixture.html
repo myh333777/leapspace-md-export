@@ -10,6 +10,8 @@ button{cursor:pointer;padding:4px 6px}
 [role=menu]{position:fixed;z-index:500;top:120px;left:305px;padding:10px;background:#fff;box-shadow:0 2px 15px #aaa}
 [role=dialog]{position:fixed;z-index:1000;inset:30% auto auto 30%;padding:22px;background:#fff;border:1px solid #bbb;box-shadow:0 10px 30px #aaa}
 #more[hidden]{display:none}
+li [data-test-pointer-only]{display:none;opacity:0}
+li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
 </style></head>
 <body>
 <nav data-testid="left-panel-nav" aria-label="Left Panel">
@@ -26,6 +28,32 @@ button{cursor:pointer;padding:4px 6px}
   const total=Number(params.get('count')||75);
   const unknown=params.get('unknown')==='1';
   const broken=params.get('broken')==='1';
+  const accordion=params.get('accordion')==='1';
+  const pointerOnly=params.get('pointer_only')==='1';
+  if(accordion){
+    const nav=document.querySelector('[data-testid="left-panel-nav"]');
+    const original=nav.querySelector('section[aria-label="Conversations"]');
+    original.removeAttribute('role');original.removeAttribute('aria-label');
+    const accordionComponent=document.createElement('div');accordionComponent.className='_component_3kb6b_85';
+    const headerContainer=document.createElement('div');
+    const header=document.createElement('div');
+    const toggle=document.createElement('button');toggle.type='button';toggle.setAttribute('aria-label','Conversations');
+    toggle.setAttribute('aria-expanded','false');toggle.textContent='Conversations';
+    header.append(toggle);headerContainer.append(header);
+    const expanding=document.createElement('div');expanding.className='_expandCollapse_127qm_92';
+    expanding.hidden=true;expanding.append(original);
+    toggle.addEventListener('click',()=>{
+      const expanded=toggle.getAttribute('aria-expanded')==='true';
+      toggle.setAttribute('aria-expanded',String(!expanded));
+      expanding.hidden=expanded;
+    });
+    accordionComponent.append(headerContainer,expanding);
+    nav.append(accordionComponent);
+    const outside=document.createElement('section');
+    outside.setAttribute('aria-label','Projects');
+    outside.innerHTML='<a href="/leapspace/conversation/ffffffff-ffff-4fff-8fff-ffffffffffff">Decoy project link</a>';
+    nav.prepend(outside);
+  }
   const list=document.getElementById('history-list');
   const more=document.getElementById('more');
   const records=Array.from({length:total},(_,i)=>({
@@ -34,7 +62,7 @@ button{cursor:pointer;padding:4px 6px}
   }));
   const state={records,deleted:[],rendered:0,menuClicks:0,modalClicks:0};
   window.__TEST_HISTORY__=state;
-  if(broken) {document.querySelector('section').innerHTML='<p>Error loading conversations</p>';return;}
+  if(broken) {document.getElementById('history-list').closest('section').innerHTML='<p>Error loading conversations</p>';return;}
   function clearPopups(){document.querySelectorAll('[data-test-site-popup]').forEach(e=>e.remove());}
   function confirmDelete(row,record){
     clearPopups();
@@ -57,10 +85,23 @@ button{cursor:pointer;padding:4px 6px}
     const from=state.rendered,to=Math.min(total,from+10);
     records.slice(from,to).forEach(record=>{
       const li=document.createElement('li');
+      if(accordion)li.setAttribute('data-testid','conversation-list-item');
       const a=document.createElement('a');a.href='/leapspace/conversation/'+record.id;a.textContent=record.title;
       const action=document.createElement('button');action.type='button';
       action.setAttribute('aria-label',unknown?'Unrecognised action':'More options');
-      action.textContent='⋯'; action.onclick=()=>showMenu(li,record);
+      action.textContent='⋯';
+      if(pointerOnly){
+        action.setAttribute('aria-haspopup','menu');
+        action.setAttribute('aria-expanded','false');
+        action.setAttribute('data-test-pointer-only','');
+        action.addEventListener('pointerdown',e=>{
+          if(e.button!==0)return;
+          action.setAttribute('aria-expanded','true');
+          showMenu(li,record);
+        });
+      }else{
+        action.onclick=()=>showMenu(li,record);
+      }
       li.append(a,action);list.append(li);
     });
     state.rendered=to;

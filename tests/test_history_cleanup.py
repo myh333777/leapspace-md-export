@@ -14,13 +14,13 @@ SCRIPT = ROOT / "sciencedirect-academic-md.user.js"
 URL = "https://www.sciencedirect.com/leapspace/?fixture_only=1"
 
 
-def setup(browser, *, count=75, unknown=False, broken=False):
+def setup(browser, *, count=75, unknown=False, broken=False, accordion=False, pointer_only=False):
     context = browser.new_context(viewport={"width": 1280, "height": 850})
     page = context.new_page()
     context.route("https://www.sciencedirect.com/**",
                   lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8", body=FIXTURE))
     page.add_init_script("window.__LS_MD_EXPORT_TEST__ = true;")
-    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}")
+    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}&accordion={int(accordion)}&pointer_only={int(pointer_only)}")
     page.add_script_tag(path=str(SCRIPT))
     page.get_by_role("button", name="导出设置").click()
     page.get_by_role("button", name="清理聊天记录…").click()
@@ -138,6 +138,48 @@ def check_stop_between_items(browser):
         context.close()
 
 
+def check_real_accordion_pointer_menu(browser):
+    """Mirror the real 2026 DOM: accordion wrapper + hidden pointerdown menu."""
+    context,page=setup(browser,count=8,accordion=True,pointer_only=True)
+    try:
+        # Decoy link outside the actual conversation accordion must be excluded.
+        before=page.evaluate("""() => {
+          const api=window.__LS_MD_EXPORT_API__, found=api.historyScope();
+          return {isNav:found.scope===found.nav, aria:found.toggle?.getAttribute('aria-expanded'),
+                  count:api.visibleHistoryAnchors(found.scope).length};
+        }""")
+        assert before["isNav"] is False, before
+        assert before["aria"] == "false", before
+        assert before["count"] == 8, before
+        page.get_by_role("button",name="预览",exact=True).click()
+        page.get_by_text("待删除 8 条",exact=False).wait_for(timeout=14000)
+        expanded=page.evaluate("""()=>document.querySelector('[data-testid=left-panel-nav] button[aria-label=Conversations]').getAttribute('aria-expanded')""")
+        assert expanded == "true", expanded
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 0
+        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
+        page.once("dialog",lambda d:d.accept())
+        page.get_by_role("button",name="确认删除").click()
+        page.get_by_text("已完成：已确认删除 8/8 条",exact=False).wait_for(timeout=20000)
+        deleted=page.evaluate("window.__TEST_HISTORY__.deleted")
+        assert len(deleted) == 8, deleted
+        assert page.locator('[aria-label="Projects"] a[href*="/leapspace/conversation/"]').count()==1
+        print("PASS real-style accordion + hidden pointerdown menu, 8/8 synthetic deletes, decoy untouched")
+    finally:
+        context.close()
+
+
+def check_accordion_load_error(browser):
+    context,page=setup(browser,count=7,accordion=True,pointer_only=True,broken=True)
+    try:
+        page.get_by_role("button",name="预览",exact=True).click()
+        page.get_by_text("扫描失败",exact=False).wait_for(timeout=9000)
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
+        assert page.get_by_role("button",name="确认删除").is_disabled()
+        print("PASS accordion history-load error fails closed")
+    finally:
+        context.close()
+
+
 if __name__ == "__main__":
     with sync_playwright() as pw:
         local_chromium = Path('/opt/homebrew/bin/chromium')
@@ -152,6 +194,8 @@ if __name__ == "__main__":
             check_load_failure(browser)
             check_count_changed(browser)
             check_stop_between_items(browser)
+            check_real_accordion_pointer_menu(browser)
+            check_accordion_load_error(browser)
         finally:
             browser.close()
-    print("PASS 6 scenarios, all offline / simulated")
+    print("PASS 8 scenarios, all offline / simulated")

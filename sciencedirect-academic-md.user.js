@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.0
+// @version      1.6.1
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.0';
+  const VERSION = '1.6.1';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -842,17 +842,35 @@
   }
 
   function historyScope() {
+    // The real LeapSpace 2026 UI renders Conversations as a generic accordion,
+    // not an aria-labeled [role=region]. Scope to that accordion; NEVER fall
+    // back to the entire sidebar, which also includes Projects and Writings.
     const nav = document.querySelector('[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]');
     if (!nav) throw new Error('尚未识别左侧会话栏；请在 LeapSpace 登录并展开侧栏。');
     const regions = Array.from(nav.querySelectorAll('[role="region"],section,[data-testid]'));
+    // Exclude individual [data-testid="conversation-list-item"] nodes: the
+    // first *item* is not the conversation *list*. This affected real UI.
     const region = regions.find(node => /^(Conversations|会话|聊天记录)$/i.test(node.getAttribute('aria-label') || ''))
-      || regions.find(node => /conversation(?:s|-list)|历史会话/i.test(node.getAttribute('data-testid') || ''));
-    // Older LeapSpace builds expose links directly below the navigation tree.
-    const scope = region || nav;
+      || regions.find(node => /^(?:conversations?-list|conversation-history|conversation-section|history-conversations)$/i.test(node.getAttribute('data-testid') || ''));
+    const toggles = [...nav.querySelectorAll('button[aria-label]')]
+      .filter(b => /^(Conversations|会话|聊天记录)$/i.test((b.getAttribute('aria-label')||'').trim()));
+    const toggle = toggles.length===1 ? toggles[0] : null;
+    let accordion=null;
+    if (!region && toggle) {
+      // Observed: button > header div > container div > Accordion component.
+      const candidate=toggle.parentElement?.parentElement?.parentElement;
+      const otherSectionButtons=candidate ? [...candidate.querySelectorAll('button[aria-label]')]
+        .filter(b=>/^(Conversations|Projects|Writings|会话|项目|写作)$/i.test(b.getAttribute('aria-label')||'')) : [];
+      if (candidate && otherSectionButtons.length===1
+          && otherSectionButtons[0]===toggle
+          && candidate.querySelector('[class*="expandCollapse"],[role="region"]')) accordion=candidate;
+    }
+    const scope=accordion||region;
+    if (!scope) throw new Error('尚未找到独立的 Conversations 列表区域；页面可能已更新，未执行删除。');
     if (/error loading conversations|unable to load conversations|加载会话.*失败|会话.*加载失败/i.test(scope.textContent || '')) {
       throw new Error('网站会话列表加载失败，未执行任何删除。');
     }
-    return {nav, scope};
+    return {nav,scope,toggle};
   }
 
   function visibleHistoryAnchors(scope) {
@@ -871,7 +889,11 @@
   }
 
   function historyScroller(scope,nav) {
-    for (const node of [scope,...Array.from(scope.querySelectorAll('*')).slice(0,80),nav]) {
+    const ancestors=[];
+    for(let p=scope?.parentElement;p&&p!==nav;p=p.parentElement) ancestors.push(p);
+    // Current LeapSpace uses a sidebar scroll container above the accordion;
+    // older versions have a list-local scroller within Conversations.
+    for (const node of [scope,...Array.from(scope.querySelectorAll('*')).slice(0,80),...ancestors,nav]) {
       if (!node || node.scrollHeight <= node.clientHeight + 20) continue;
       const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null;
       if (!style || /auto|scroll|overlay/i.test(style.overflowY)) return node;
@@ -891,10 +913,12 @@
     if (!/^\/(?:leapspace|researcher-ai)(?:\/|$)/.test(location.pathname)) throw new Error('请先打开 LeapSpace。');
     if (mode !== 'recent' && mode !== 'all') throw new Error('未知清理范围。');
     const target = mode === 'recent' ? Math.min(500,Math.max(1,Math.floor(Number(count)||50))) : HISTORY_LIMIT;
-    const {nav,scope} = historyScope();
-    if (!visibleHistoryAnchors(scope).length) {
-      const toggle=nav.querySelector('button[aria-label="Toggle sidebar"]');
-      if (toggle) {toggle.click(); await historyDelay(220,signal);}
+    let {nav,scope,toggle} = historyScope();
+    // Expand only the Conversations accordion, not the global sidebar.
+    if (toggle?.getAttribute('aria-expanded')==='false') {
+      toggle.click();
+      await historyDelay(220,signal);
+      ({nav,scope,toggle}=historyScope());
     }
     const originalScroll = historyScroller(scope,nav);
     const scrollStart = originalScroll?.scrollTop || 0;
@@ -1014,9 +1038,40 @@
     const control=historyMenuControl(row);
     if (!control) throw new Error('当前页面未识别会话操作菜单；没有删除任何新的条目。');
     const existingMenus=new Set([...document.querySelectorAll('[role="menu"],[data-radix-menu-content]')].filter(historyVisible));
-    control.click();
-    await historyDelay(140,signal);
-    const action=historyDeleteAction(existingMenus);
+    // Actual LeapSpace 2026 hides its aria-haspopup="menu" action button until
+    // row hover (display:none). Script-dispatched mouseover does not activate
+    // CSS :hover; reveal ONLY that already identified row button temporarily.
+    const originalStyle=control.getAttribute('style');
+    let action=null;
+    try {
+      if (!historyVisible(control)) {
+        control.style.setProperty('display','inline-flex','important');
+        control.style.setProperty('opacity','1','important');
+        control.style.setProperty('pointer-events','auto','important');
+      }
+      control.click();
+      await historyDelay(140,signal);
+      action=historyDeleteAction(existingMenus);
+      // Real LeapSpace menu uses Radix-style onPointerDown. HTMLElement.click()
+      // alone does not open it; deliver a pointer event on the exact action
+      // control rather than clicking arbitrary page coordinates.
+      if (!action && control.getAttribute('aria-haspopup')==='menu'
+          && control.getAttribute('aria-expanded')!=='true') {
+        control.dispatchEvent(new PointerEvent('pointerdown',{
+          bubbles:true,composed:true,pointerId:1,pointerType:'mouse',
+          isPrimary:true,button:0,buttons:1
+        }));
+        control.dispatchEvent(new PointerEvent('pointerup',{
+          bubbles:true,composed:true,pointerId:1,pointerType:'mouse',
+          isPrimary:true,button:0,buttons:0
+        }));
+        await historyDelay(140,signal);
+        action=historyDeleteAction(existingMenus);
+      }
+    } finally {
+      if (originalStyle===null) control.removeAttribute('style');
+      else control.setAttribute('style',originalStyle);
+    }
     if(!action) throw new Error('未找到唯一的“删除会话”操作，已中止，不会猜测按钮。');
     action.click();
     let modalConfirmed=false;
@@ -1377,7 +1432,9 @@
     window.__LS_MD_EXPORT_UI_DISPOSE__ = () => {abort.abort();historyController?.abort();};
     document.addEventListener('pointerdown', e => {
       if (!el.contains(e.target) && !settingsEl.hidden) closeSettings();
-      if (!el.contains(e.target) && !historyEl.hidden) closeHistory();
+      // Site-owned menu and confirmation portals live outside this toolbar.
+      // Never abort a running cleanup because a pointer event occurs there.
+      if (!el.contains(e.target) && !historyEl.hidden && !historyRunning && !busy) closeHistory();
     }, {signal:abort.signal});
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape' && !historyEl.hidden) {closeHistory();settingsBtn.focus();return;}

@@ -6,7 +6,7 @@
 
 [点击安装最新版 userscript](https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js)
 
-如果浏览器直接显示源码，请在 Tampermonkey 的实用工具中选择从 URL 安装，粘贴上述地址。升级前关闭手动安装的旧版本，避免页面出现重复工具条。v1.5.2 以后由 GitHub 原始文件提供更新检查；当前版本为 v1.6.0。
+如果浏览器直接显示源码，请在 Tampermonkey 的实用工具中选择从 URL 安装，粘贴上述地址。升级前关闭手动安装的旧版本，避免页面出现重复工具条。v1.5.2 以后由 GitHub 原始文件提供更新检查；当前版本为 v1.6.1。
 
 ## 功能
 
@@ -45,7 +45,7 @@
 - **失败即停止**：找不到准确的会话行、菜单、删除确认按钮，或网络故障/结果不明确时立即中止；不使用隐藏接口，不自动重新尝试，更不会切换到不相关的删除按钮。
 - 不在脚本中保存会话正文、历史标题或完整清理清单；本地只保存你设定的数字 N。**安装、升级脚本不会自动删除任何记录。**
 
-**删除前建议**先导出重要对话。另可使用 LeapSpace 的 Temporary conversation 临时会话模式减少历史积累。批量删除逻辑已在本地模拟网页上验证；因实际 ScienceDirect 页面在开发时出现 `ERR_CONNECTION_CLOSED`，新的删除菜单适配尚未完成真实登录页面的无破坏性核验。若实际 UI 不符合预期，脚本会停止并提示，不能假定已删除成功。
+**删除前建议**先导出重要对话。另可使用 LeapSpace 的 Temporary conversation 临时会话模式减少历史积累。批量删除逻辑已在本地模拟网页上验证。随后通过已登录的 Mac 浏览器只读核实了 LeapSpace 的 Conversations 折叠列表、隐藏的操作按钮及其 Rename / Move to project / Export full conversation / Delete 菜单；**未点击真实 Delete，也未验证站点最终删除确认窗口**。若实际 UI 不符合预期，脚本会停止并提示，不能假定已删除成功。
 
 ## 隐私与限制
 
