@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.log
+*.zip
+credentials*.json
+browser_data/
+results/
+private/
+node_modules/
+*.session
+*conversation*.md
+*数据要素市场化*.md
