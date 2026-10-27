@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.3
+// @version      1.6.4
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.3';
+  const VERSION = '1.6.4';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -842,7 +842,14 @@
   }
 
   function historyScope() {
-    const nav=document.querySelector('[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]');
+    // LeapSpace 2026 has two <nav aria-label="Left Panel"> elements:
+    // 1. [data-testid="nav-bar"]: narrow icon bar (marked aria-hidden="true" when side sheet opens)
+    // 2. [data-testid="left-panel-nav"]: slide-out drawer containing conversations
+    // We must prioritize left-panel-nav or exclude nav-bar, otherwise querySelector
+    // matches the preceding nav-bar first and wrongly reports sidebar as hidden.
+    const nav=document.querySelector('[data-testid="left-panel-nav"]')
+      || document.querySelector('nav[aria-label="Left Panel"]:not([data-testid="nav-bar"])')
+      || document.querySelector('nav[aria-label="Left Panel"]');
     if(!nav || nav.getAttribute('aria-hidden')==='true')
       throw new Error('左侧聊天栏未展开；请展开 Conversations 后再预览。');
     const allToggles=[...nav.querySelectorAll('button[aria-label]')]
@@ -948,9 +955,21 @@
     if (!/^\/(?:leapspace|researcher-ai)(?:\/|$)/.test(location.pathname)) throw new Error('请先打开 LeapSpace。');
     if (mode !== 'recent' && mode !== 'all') throw new Error('未知清理范围。');
     const target = mode === 'recent' ? Math.min(500,Math.max(1,Math.floor(Number(count)||50))) : HISTORY_LIMIT;
+    let initialNav = document.querySelector('[data-testid="left-panel-nav"]')
+      || document.querySelector('nav[aria-label="Left Panel"]:not([data-testid="nav-bar"])');
+    if (!initialNav || initialNav.getAttribute('aria-hidden') === 'true') {
+      const openBtn = document.querySelector('#open-navigation-panel-button')
+        || [...document.querySelectorAll('button')].find(b => /^(?:Toggle sidebar|Open sidebar)$/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
+      if (openBtn) {
+        progress?.('正在展开左侧栏…');
+        openBtn.click();
+        await historyDelay(300, signal);
+      }
+    }
     let {nav,scope,toggle} = historyScope();
     // Expand only the Conversations accordion, not the global sidebar.
     if (toggle?.getAttribute('aria-expanded')==='false') {
+      progress?.('正在展开 Conversations 列表…');
       toggle.click();
       await historyDelay(220,signal);
       ({nav,scope,toggle}=historyScope());

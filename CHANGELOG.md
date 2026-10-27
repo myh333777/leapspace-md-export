@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.4 — 2026-10-27
+- 修复侧栏存在两个 `aria-label="Left Panel"` 时的选择器命中冲突：`nav-bar`（窄条）在抽屉展开时被网站置为 `aria-hidden="true"`，导致原选择器 `[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]` 总是命中前者并报错“左侧聊天栏未展开”。
+- 调整为优先选择 `[data-testid="left-panel-nav"]` 并排除 `[data-testid="nav-bar"]`，彻底解决侧栏展开后仍无法识别的问题。
+- 扫描前自动检测侧栏抽屉状态：若未展开自动点击 `#open-navigation-panel-button`（Toggle sidebar）并等待动画，随后若 `Conversations` 处于收起状态自动展开列表，免去手动双重展开。
+
 ## 1.6.3 — 2026-10-27
 - 优先识别真实的 `[data-testid="conversation-list-item"]` 所属列表，并交叉校验 Conversations 标题，避免旧版扫描器无法定位有记录的侧栏。
 - 修复“加载更多”位于 `<ul>` 外层时遗漏后续对话的问题；不会将项目或写作条目混入聊天列表。
