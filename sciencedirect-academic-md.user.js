@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.6
+// @version      1.6.7
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.6';
+  const VERSION = '1.6.7';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -1093,19 +1093,12 @@
     return acts.length===1 ? acts[0] : null;
   }
 
-  async function historyDeleteOne(item,signal) {
-    const row=await historyFindRow(item.id,signal);
-    if (!row) throw new Error('未找到原定会话“'+(item.title||item.id)+'”；停止，避免误删其他会话。');
-    const current=visibleHistoryAnchors(row).find(a=>a.id===item.id);
-    if(!current) throw new Error('会话身份变化，停止删除。');
+  async function historyDeleteRowNode(row,item,signal) {
     row.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-    await historyDelay(80,signal);
+    await historyDelay(60,signal);
     const control=historyMenuControl(row);
     if (!control) throw new Error('当前页面未识别会话操作菜单；没有删除任何新的条目。');
     const existingMenus=new Set([...document.querySelectorAll('[role="menu"],[data-radix-menu-content]')].filter(historyVisible));
-    // Actual LeapSpace 2026 hides its aria-haspopup="menu" action button until
-    // row hover (display:none). Script-dispatched mouseover does not activate
-    // CSS :hover; reveal ONLY that already identified row button temporarily.
     const originalStyle=control.getAttribute('style');
     let action=null;
     try {
@@ -1115,11 +1108,8 @@
         control.style.setProperty('pointer-events','auto','important');
       }
       control.click();
-      await historyDelay(140,signal);
+      await historyDelay(120,signal);
       action=historyDeleteAction(existingMenus);
-      // Real LeapSpace menu uses Radix-style onPointerDown. HTMLElement.click()
-      // alone does not open it; deliver a pointer event on the exact action
-      // control rather than clicking arbitrary page coordinates.
       if (!action && control.getAttribute('aria-haspopup')==='menu'
           && control.getAttribute('aria-expanded')!=='true') {
         control.dispatchEvent(new PointerEvent('pointerdown',{
@@ -1130,7 +1120,7 @@
           bubbles:true,composed:true,pointerId:1,pointerType:'mouse',
           isPrimary:true,button:0,buttons:0
         }));
-        await historyDelay(140,signal);
+        await historyDelay(120,signal);
         action=historyDeleteAction(existingMenus);
       }
       if(!action) throw new Error('未找到唯一的“删除会话”操作，已中止，不会猜测按钮。');
@@ -1141,7 +1131,7 @@
       if (action[reactActionKey]?.onClick) {
         try { action[reactActionKey].onClick({ preventDefault(){}, stopPropagation(){} }); } catch {}
       }
-      await historyDelay(180,signal);
+      await historyDelay(150,signal);
     } finally {
       if (originalStyle===null) control.removeAttribute('style');
       else control.setAttribute('style',originalStyle);
@@ -1151,6 +1141,7 @@
     const activeId = location.pathname.match(HISTORY_ITEM_RE)?.[1] || '';
     for(let i=0;i<60;i++) {
       if(modalConfirmed && (!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id)))) return true;
+      if (signal?.aborted) throw new Error('操作已停止。');
       const conf=historyConfirmation();
       if(conf && !modalConfirmed) {
         conf.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
@@ -1163,29 +1154,91 @@
         modalConfirmed=true;
         if(!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id))) return true;
       }
-      await historyDelay(180,signal);
+      await historyDelay(150,signal);
     }
+    if(!historyRowById(item.id)) return true;
     throw new Error('无法确认会话已从列表消失（可能正在等待网站确认），已停止后续删除；请核对当前页面。');
+  }
+
+  async function historyDeleteOne(item,signal) {
+    const row=await historyFindRow(item.id,signal);
+    if (!row) throw new Error('未找到原定会话“'+(item.title||item.id)+'”；停止，避免误删其他会话。');
+    const current=visibleHistoryAnchors(row).find(a=>a.id===item.id);
+    if(!current) throw new Error('会话身份变化，停止删除。');
+    return historyDeleteRowNode(row,item,signal);
   }
 
   async function historyExecute(plan,progress,signal) {
     if (!plan?.items?.length || !['recent','all'].includes(plan.mode)) throw new Error('没有有效的预览清单。');
-    // Freeze all target IDs before deletion. Moving the currently open chat to the end
-    // prevents navigation away from interrupting the remaining work.
-    const active=location.pathname.match(HISTORY_ITEM_RE)?.[1]||'';
-    const ordered=[...plan.items].sort((a,b)=>(a.id===active)-(b.id===active));
-    let completed=0;
-    for (const item of ordered) {
-      if(signal?.aborted) return {completed,total:ordered.length,stopped:true};
-      try{
-        await historyDeleteOne(item,signal);
-      }catch(err){
-        return {completed,total:ordered.length,stopped:true,error:String(err?.message||err)};
+    const targetCount = plan.items.length;
+
+    // If currently inside a specific conversation, navigate to blank /leapspace
+    // to prevent conversation removal from triggering SPA unmount/redirection.
+    if (/^\/(?:leapspace|researcher-ai)\/conversation\//i.test(location.pathname)) {
+      const newChatBtn = document.querySelector('a[href="/leapspace"]')
+        || [...document.querySelectorAll('a,button')].find(b => /^(?:New conversation|新对话|新建会话)$/i.test((b.textContent || b.getAttribute('aria-label') || '').trim()));
+      if (newChatBtn) {
+        newChatBtn.click();
+        await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 20 : 350, signal);
       }
-      completed++;
-      progress?.(completed,ordered.length,item);
     }
-    return {completed,total:ordered.length,stopped:false};
+
+    let completed = 0;
+    // Queue-draining pattern: in chronological conversation lists, deleting the top
+    // item shifts all subsequent items up by 1. Repeating this exactly targetCount
+    // times deletes all intended items sequentially without fragile ID re-scanning.
+    for (let step = 0; step < targetCount; step++) {
+      if (signal?.aborted) return {completed, total: targetCount, stopped: true};
+
+      // Ensure any previous confirmation dialog is fully unmounted
+      for (let m = 0; m < 20; m++) {
+        if (!historyConfirmation()) break;
+        try {
+          await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 10 : 80, signal);
+        } catch {
+          return {completed, total: targetCount, stopped: true};
+        }
+      }
+
+      const {nav, scope} = historyScope(true);
+      let anchors = visibleHistoryAnchors(scope);
+      if (!anchors.length) {
+        const more = historyListMore(scope);
+        if (more) {
+          try {
+            more.click();
+            await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 20 : 300, signal);
+            anchors = visibleHistoryAnchors(scope);
+          } catch {
+            return {completed, total: targetCount, stopped: true};
+          }
+        }
+        if (!anchors.length) break;
+      }
+
+      const topItem = anchors[0];
+      const topRow = historyRow(topItem.anchor, nav);
+      if (!topRow) {
+        throw new Error('未找到当前第一条会话节点，已停止。');
+      }
+
+      try {
+        await historyDeleteRowNode(topRow, topItem, signal);
+      } catch (err) {
+        if (signal?.aborted) return {completed, total: targetCount, stopped: true};
+        return {completed, total: targetCount, stopped: true, error: String(err?.message || err)};
+      }
+
+      completed++;
+      progress?.(completed, targetCount, topItem);
+      if (signal?.aborted) return {completed, total: targetCount, stopped: true};
+      try {
+        await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 15 : 250, signal);
+      } catch {
+        return {completed, total: targetCount, stopped: true};
+      }
+    }
+    return {completed, total: targetCount, stopped: false};
   }
 
   // Minimal panel: one primary action and an optional preferences popover.

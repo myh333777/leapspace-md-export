@@ -6,7 +6,7 @@
 
 [点击安装最新版 userscript](https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js)
 
-如果浏览器直接显示源码，请在 Tampermonkey 的实用工具中选择从 URL 安装，粘贴上述地址。升级前关闭手动安装的旧版本，避免页面出现重复工具条。v1.5.2 以后由 GitHub 原始文件提供更新检查；当前版本为 v1.6.6。
+如果浏览器直接显示源码，请在 Tampermonkey 的实用工具中选择从 URL 安装，粘贴上述地址。升级前关闭手动安装的旧版本，避免页面出现重复工具条。v1.5.2 以后由 GitHub 原始文件提供更新检查；当前版本为 v1.6.7。
 
 ## 功能
 
