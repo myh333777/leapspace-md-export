@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.5 — 2026-10-27
+- 修复删除执行中因网站原生确认弹窗置入 `aria-hidden="true"` 导致误判“左侧聊天栏未展开”而中断批处理的问题。
+- 增强会话行消失检测（`historyRowById`）：安全捕获状态检查异常，确保删除完成后平滑步进至下一条，无需人工手动确认弹窗。
+- 对会话菜单与删除确认弹窗按钮派发完整的 PointerEvent（pointerdown/pointerup/click），适配 Graphene 弹窗的自动确认。
+
 ## 1.6.4 — 2026-10-27
 - 修复侧栏存在两个 `aria-label="Left Panel"` 时的选择器命中冲突：`nav-bar`（窄条）在抽屉展开时被网站置为 `aria-hidden="true"`，导致原选择器 `[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]` 总是命中前者并报错“左侧聊天栏未展开”。
 - 调整为优先选择 `[data-testid="left-panel-nav"]` 并排除 `[data-testid="nav-bar"]`，彻底解决侧栏展开后仍无法识别的问题。

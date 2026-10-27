@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.4
+// @version      1.6.5
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.4';
+  const VERSION = '1.6.5';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -841,7 +841,7 @@
     } catch { return null; }
   }
 
-  function historyScope() {
+  function historyScope(allowModal = false) {
     // LeapSpace 2026 has two <nav aria-label="Left Panel"> elements:
     // 1. [data-testid="nav-bar"]: narrow icon bar (marked aria-hidden="true" when side sheet opens)
     // 2. [data-testid="left-panel-nav"]: slide-out drawer containing conversations
@@ -850,7 +850,14 @@
     const nav=document.querySelector('[data-testid="left-panel-nav"]')
       || document.querySelector('nav[aria-label="Left Panel"]:not([data-testid="nav-bar"])')
       || document.querySelector('nav[aria-label="Left Panel"]');
-    if(!nav || nav.getAttribute('aria-hidden')==='true')
+    if(!nav)
+      throw new Error('左侧聊天栏未展开；请展开 Conversations 后再预览。');
+    // When a modal dialog is open (e.g. Delete confirmation), LeapSpace sets
+    // aria-hidden="true" on background elements including left-panel-nav.
+    // If allowModal is true or any site modal is active, do not treat that as a collapsed sidebar.
+    const hasModal = allowModal || Boolean(document.querySelector('[role="dialog"]:not(#'+APP_ID+'),[role="alertdialog"],div[class*="_modal-overlay_"]'));
+    const isActuallyHidden = !hasModal && (nav.getAttribute('aria-hidden')==='true' || (nav.getBoundingClientRect?.().width === 0));
+    if(isActuallyHidden)
       throw new Error('左侧聊天栏未展开；请展开 Conversations 后再预览。');
     const allToggles=[...nav.querySelectorAll('button[aria-label]')]
       .filter(b=>/^(Conversations|会话|聊天记录)$/i.test((b.getAttribute('aria-label')||'').trim()));
@@ -1019,9 +1026,13 @@
   }
 
   function historyRowById(id) {
-    const {nav,scope}=historyScope();
-    const item=visibleHistoryAnchors(scope).find(it=>it.id===id);
-    return item ? historyRow(item.anchor,nav) : null;
+    try {
+      const {nav,scope}=historyScope(true);
+      const item=visibleHistoryAnchors(scope).find(it=>it.id===id);
+      return item ? historyRow(item.anchor,nav) : null;
+    } catch {
+      return null;
+    }
   }
 
   async function historyFindRow(id,signal) {
@@ -1075,8 +1086,8 @@
   function historyConfirmation() {
     const dialogs=[...document.querySelectorAll('[role="alertdialog"],[role="dialog"]')].filter(d=>!d.closest('#'+APP_ID) && historyVisible(d)
       && /delete|remove|删除/i.test(d.textContent||''));
-    if(dialogs.length!==1) return null;
-    const d=dialogs[0];
+    if(!dialogs.length) return null;
+    const d=dialogs[dialogs.length - 1];
     const acts=[...d.querySelectorAll('button,[role="button"]')].filter(b=>historyVisible(b)
       && /^(?:delete|delete conversation|yes, delete|confirm delete|删除|确认删除)$/i.test(historyAccessibleName(b)));
     return acts.length===1 ? acts[0] : null;
@@ -1127,15 +1138,18 @@
       else control.setAttribute('style',originalStyle);
     }
     if(!action) throw new Error('未找到唯一的“删除会话”操作，已中止，不会猜测按钮。');
+    action.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
+    action.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
     action.click();
     let modalConfirmed=false;
     for(let i=0;i<45;i++) {
       if(modalConfirmed && !historyRowById(item.id)) return true;
       const conf=historyConfirmation();
       if(conf && !modalConfirmed) {
-        conf.click();modalConfirmed=true;
-        // Count a deletion that was already reflected in the list even when
-        // the user presses Stop immediately after this site confirmation.
+        conf.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
+        conf.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
+        conf.click();
+        modalConfirmed=true;
         if(!historyRowById(item.id)) return true;
       }
       await historyDelay(170,signal);
