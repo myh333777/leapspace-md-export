@@ -14,13 +14,13 @@ SCRIPT = ROOT / "sciencedirect-academic-md.user.js"
 URL = "https://www.sciencedirect.com/leapspace/?fixture_only=1"
 
 
-def setup(browser, *, count=75, unknown=False, broken=False, accordion=False, pointer_only=False, deep=False, flat=False):
+def setup(browser, *, count=75, unknown=False, broken=False, accordion=False, pointer_only=False, deep=False, flat=False, reorder=False, delayed=False):
     context = browser.new_context(viewport={"width": 1280, "height": 850})
     page = context.new_page()
     context.route("https://www.sciencedirect.com/**",
                   lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8", body=FIXTURE))
     page.add_init_script("window.__LS_MD_EXPORT_TEST__ = true;")
-    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}&accordion={int(accordion)}&pointer_only={int(pointer_only)}&deep={int(deep)}&flat={int(flat)}")
+    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}&accordion={int(accordion)}&pointer_only={int(pointer_only)}&deep={int(deep)}&flat={int(flat)}&reorder={int(reorder)}&delayed={int(delayed)}")
     page.add_script_tag(path=str(SCRIPT))
     page.get_by_role("button", name="导出设置").click()
     page.get_by_role("button", name="清理聊天记录…").click()
@@ -168,6 +168,39 @@ def check_real_accordion_pointer_menu(browser):
         context.close()
 
 
+def check_reorder_keeps_frozen_ids(browser):
+    context,page=setup(browser,count=8,reorder=True)
+    try:
+        page.get_by_role("button",name="预览",exact=True).click()
+        page.get_by_text("待删除 8 条",exact=False).wait_for(timeout=12000)
+        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
+        page.once("dialog",lambda d:d.accept())
+        page.get_by_role("button",name="确认删除").click()
+        page.get_by_text("已完成：已确认删除 8/8 条",exact=False).wait_for(timeout=20000)
+        deleted=page.evaluate("window.__TEST_HISTORY__.deleted")
+        assert len(deleted)==8 and all(x.endswith(str(i).zfill(12)) for i,x in enumerate(deleted,1)),deleted
+        assert page.get_by_text("Inserted unrelated conversation").count()==1
+        print("PASS frozen IDs prevent deleting a new/unselected chat inserted mid-batch")
+    finally:
+        context.close()
+
+
+def check_slow_confirmation_at_most_once(browser):
+    context,page=setup(browser,count=8,delayed=True)
+    try:
+        page.get_by_role("button",name="预览",exact=True).click()
+        page.get_by_text("待删除 8 条",exact=False).wait_for(timeout=12000)
+        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
+        page.once("dialog",lambda d:d.accept())
+        page.get_by_role("button",name="确认删除").click()
+        page.get_by_text("已完成：已确认删除 8/8 条",exact=False).wait_for(timeout=20000)
+        state=page.evaluate("window.__TEST_HISTORY__")
+        assert len(state["deleted"])==8 and state["confirmAttempts"]==8, state
+        print("PASS slow async confirmation does not trigger duplicate delete requests")
+    finally:
+        context.close()
+
+
 def check_accordion_load_error(browser):
     context,page=setup(browser,count=7,accordion=True,pointer_only=True,broken=True)
     try:
@@ -245,9 +278,11 @@ if __name__ == "__main__":
             check_count_changed(browser)
             check_stop_between_items(browser)
             check_real_accordion_pointer_menu(browser)
+            check_reorder_keeps_frozen_ids(browser)
+            check_slow_confirmation_at_most_once(browser)
             check_accordion_load_error(browser)
             check_flat_sidebar_51_preview_only(browser)
             check_deep_sidebar_51_preview_only(browser)
         finally:
             browser.close()
-    print("PASS 10 scenarios, all offline / simulated")
+    print("PASS 12 scenarios, all offline / simulated")

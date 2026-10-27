@@ -32,6 +32,8 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
   const pointerOnly=params.get('pointer_only')==='1';
   const deep=params.get('deep')==='1';
   const flat=params.get('flat')==='1';
+  const reorder=params.get('reorder')==='1';
+  const delayed=params.get('delayed')==='1';
   if(accordion){
     const nav=document.querySelector('[data-testid="left-panel-nav"]');
     const original=nav.querySelector('section[aria-label="Conversations"]');
@@ -83,7 +85,7 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
     id:'00000000-0000-4000-8000-'+String(i+1).padStart(12,'0'),
     title:'Synthetic conversation '+String(i+1).padStart(3,'0')
   }));
-  const state={records,deleted:[],rendered:0,menuClicks:0,modalClicks:0};
+  const state={records,deleted:[],rendered:0,menuClicks:0,modalClicks:0,confirmAttempts:0};
   window.__TEST_HISTORY__=state;
   if(broken) {document.getElementById('history-list').parentElement.innerHTML='<p>Error loading conversations</p>';return;}
   function clearPopups(){document.querySelectorAll('[data-test-site-popup]').forEach(e=>e.remove());}
@@ -93,7 +95,18 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
     const info=document.createElement('p');info.textContent='Delete conversation '+record.title+'? This cannot be undone.';
     const cancel=document.createElement('button');cancel.textContent='Cancel';cancel.onclick=clearPopups;
     const del=document.createElement('button');del.textContent='Delete';
-    del.onclick=()=>{row.remove();state.deleted.push(record.id);state.modalClicks++;clearPopups();if(state.deleted.length===Number(window.__TEST_STOP_AFTER))document.querySelector('.ls-history-stop')?.click();};
+    del.onclick=()=>{
+      state.confirmAttempts++;
+      const commit=()=>{
+        if(!row.isConnected)return;
+        row.remove();state.deleted.push(record.id);state.modalClicks++;clearPopups();
+        if(reorder && state.deleted.length===2){
+          list.prepend(makeRow({id:'77777777-7777-4777-8777-777777777777',title:'Inserted unrelated conversation'}));
+        }
+        if(state.deleted.length===Number(window.__TEST_STOP_AFTER))document.querySelector('.ls-history-stop')?.click();
+      };
+      if(delayed)setTimeout(commit,180);else commit();
+    };
     d.append(info,cancel,del);document.body.append(d);
   }
   function showMenu(row,record){
@@ -104,9 +117,7 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
     del.onclick=()=>confirmDelete(row,record);
     m.append(rename,del);document.body.append(m);
   }
-  function addRows(){
-    const from=state.rendered,to=Math.min(total,from+10);
-    records.slice(from,to).forEach(record=>{
+  function makeRow(record){
       const li=document.createElement('li');
       if(accordion || flat)li.setAttribute('data-testid','conversation-list-item');
       const a=document.createElement('a');a.href='/leapspace/conversation/'+record.id;a.textContent=record.title;
@@ -125,8 +136,11 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
       }else{
         action.onclick=()=>showMenu(li,record);
       }
-      li.append(a,action);list.append(li);
-    });
+      li.append(a,action);return li;
+  }
+  function addRows(){
+    const from=state.rendered,to=Math.min(total,from+10);
+    records.slice(from,to).forEach(record=>list.append(makeRow(record)));
     state.rendered=to;
     more.hidden=state.rendered>=total;
   }
