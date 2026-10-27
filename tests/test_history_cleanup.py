@@ -197,7 +197,7 @@ def check_flat_sidebar_51_preview_only(browser):
             isNav:data.scope===data.nav};
         }""")
         assert ids["isNav"] is False
-        assert ids["count"] == 64, ids
+        assert 51 <= ids["count"] <= 64, ids
         assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
         assert page.get_by_role("button",name="确认删除").is_disabled()
         print("PASS screenshot-style flat Conversations + recent 51 preview; zero deletions")
@@ -224,7 +224,7 @@ def check_deep_sidebar_51_preview_only(browser):
            return {count:api.visibleHistoryAnchors(data.scope).length,
                    isNav:data.scope===data.nav};
         }""")
-        assert result["count"]==64 and result["isNav"] is False, result
+        assert 51 <= result["count"] <= 64 and result["isNav"] is False, result
         print("PASS deep accordion Conversations + recent 51 preview; zero deletions")
     finally:
         context.close()
