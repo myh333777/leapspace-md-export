@@ -14,13 +14,13 @@ SCRIPT = ROOT / "sciencedirect-academic-md.user.js"
 URL = "https://www.sciencedirect.com/leapspace/?fixture_only=1"
 
 
-def setup(browser, *, count=75, unknown=False, broken=False, accordion=False, pointer_only=False):
+def setup(browser, *, count=75, unknown=False, broken=False, accordion=False, pointer_only=False, deep=False, flat=False):
     context = browser.new_context(viewport={"width": 1280, "height": 850})
     page = context.new_page()
     context.route("https://www.sciencedirect.com/**",
                   lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8", body=FIXTURE))
     page.add_init_script("window.__LS_MD_EXPORT_TEST__ = true;")
-    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}&accordion={int(accordion)}&pointer_only={int(pointer_only)}")
+    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}&accordion={int(accordion)}&pointer_only={int(pointer_only)}&deep={int(deep)}&flat={int(flat)}")
     page.add_script_tag(path=str(SCRIPT))
     page.get_by_role("button", name="导出设置").click()
     page.get_by_role("button", name="清理聊天记录…").click()
@@ -180,6 +180,56 @@ def check_accordion_load_error(browser):
         context.close()
 
 
+def check_flat_sidebar_51_preview_only(browser):
+    """Regression: screenshot-like flat heading with no labeled region."""
+    context,page=setup(browser,count=64,flat=True)
+    try:
+        count=page.get_by_role("spinbutton",name="删除最近几条")
+        count.fill("51")
+        count.dispatch_event("change")
+        page.get_by_role("button",name="预览",exact=True).click()
+        page.get_by_text("待删除 51 条",exact=False).wait_for(timeout=18000)
+        status=page.locator(".ls-history-status").inner_text()
+        assert "扫描失败" not in status, status
+        ids=page.evaluate("""() => {
+          const api=window.__LS_MD_EXPORT_API__, data=api.historyScope();
+          return {count:api.visibleHistoryAnchors(data.scope).length,
+            isNav:data.scope===data.nav};
+        }""")
+        assert ids["isNav"] is False
+        assert 51 <= ids["count"] <= 64, ids
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
+        assert page.get_by_role("button",name="确认删除").is_disabled()
+        print("PASS screenshot-style flat Conversations + recent 51 preview; zero deletions")
+    finally:
+        context.close()
+
+
+def check_deep_sidebar_51_preview_only(browser):
+    """Regression: accordion toggle may be >3 parents from list."""
+    context,page=setup(browser,count=64,accordion=True,deep=True,pointer_only=True)
+    try:
+        count=page.get_by_role("spinbutton",name="删除最近几条")
+        count.fill("51")
+        count.dispatch_event("change")
+        page.get_by_role("button",name="预览",exact=True).click()
+        page.get_by_text("待删除 51 条",exact=False).wait_for(timeout=18000)
+        status=page.locator(".ls-history-status").inner_text()
+        assert "扫描失败" not in status, status
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
+        assert page.get_by_role("button",name="确认删除").is_disabled()
+        # A decoy Projects link must never appear in the selected scope.
+        result=page.evaluate("""() => {
+           const api=window.__LS_MD_EXPORT_API__, data=api.historyScope();
+           return {count:api.visibleHistoryAnchors(data.scope).length,
+                   isNav:data.scope===data.nav};
+        }""")
+        assert 51 <= result["count"] <= 64 and result["isNav"] is False, result
+        print("PASS deep accordion Conversations + recent 51 preview; zero deletions")
+    finally:
+        context.close()
+
+
 if __name__ == "__main__":
     with sync_playwright() as pw:
         local_chromium = Path('/opt/homebrew/bin/chromium')
@@ -196,6 +246,8 @@ if __name__ == "__main__":
             check_stop_between_items(browser)
             check_real_accordion_pointer_menu(browser)
             check_accordion_load_error(browser)
+            check_flat_sidebar_51_preview_only(browser)
+            check_deep_sidebar_51_preview_only(browser)
         finally:
             browser.close()
-    print("PASS 8 scenarios, all offline / simulated")
+    print("PASS 10 scenarios, all offline / simulated")

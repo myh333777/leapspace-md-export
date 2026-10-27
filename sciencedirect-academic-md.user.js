@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.1
+// @version      1.6.2
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.1';
+  const VERSION = '1.6.2';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -842,34 +842,57 @@
   }
 
   function historyScope() {
-    // The real LeapSpace 2026 UI renders Conversations as a generic accordion,
-    // not an aria-labeled [role=region]. Scope to that accordion; NEVER fall
-    // back to the entire sidebar, which also includes Projects and Writings.
-    const nav = document.querySelector('[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]');
-    if (!nav) throw new Error('尚未识别左侧会话栏；请在 LeapSpace 登录并展开侧栏。');
-    const regions = Array.from(nav.querySelectorAll('[role="region"],section,[data-testid]'));
-    // Exclude individual [data-testid="conversation-list-item"] nodes: the
-    // first *item* is not the conversation *list*. This affected real UI.
-    const region = regions.find(node => /^(Conversations|会话|聊天记录)$/i.test(node.getAttribute('aria-label') || ''))
-      || regions.find(node => /^(?:conversations?-list|conversation-history|conversation-section|history-conversations)$/i.test(node.getAttribute('data-testid') || ''));
-    const toggles = [...nav.querySelectorAll('button[aria-label]')]
-      .filter(b => /^(Conversations|会话|聊天记录)$/i.test((b.getAttribute('aria-label')||'').trim()));
-    const toggle = toggles.length===1 ? toggles[0] : null;
-    let accordion=null;
-    if (!region && toggle) {
-      // Observed: button > header div > container div > Accordion component.
-      const candidate=toggle.parentElement?.parentElement?.parentElement;
-      const otherSectionButtons=candidate ? [...candidate.querySelectorAll('button[aria-label]')]
-        .filter(b=>/^(Conversations|Projects|Writings|会话|项目|写作)$/i.test(b.getAttribute('aria-label')||'')) : [];
-      if (candidate && otherSectionButtons.length===1
-          && otherSectionButtons[0]===toggle
-          && candidate.querySelector('[class*="expandCollapse"],[role="region"]')) accordion=candidate;
+    // Never infer the history list from a fixed number of DOM parents.
+    // LeapSpace uses differently nested accordion / panel layouts depending
+    // on account, viewport and rollout. Start with an exact Conversations
+    // heading and climb only while it remains the sole sidebar section.
+    const nav=document.querySelector('[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]');
+    if(!nav) throw new Error('尚未识别左侧会话栏；请在 LeapSpace 登录并展开侧栏。');
+    const isHistory=x=>/^(?:Conversations|会话|聊天记录)$/i.test(x);
+    const isOtherSection=x=>/^(?:Projects|Writings|项目|写作)$/i.test(x);
+    const nameOf=x=>(x.getAttribute('aria-label')||x.textContent||'').replace(/\s+/g,' ').trim();
+    const allLabels=[...nav.querySelectorAll('button,[role="heading"],h2,h3,h4,h5,strong,span')]
+      .filter(x=>isHistory(nameOf(x)));
+    const buttons=allLabels.filter(x=>x.matches('button'));
+    const headed=allLabels.filter(x=>x.matches('[role="heading"],h2,h3,h4,h5'));
+    const candidates=buttons.length?buttons:headed.length?headed:allLabels.filter(x=>x.children.length===0);
+    const heading=candidates.length===1?candidates[0]:null;
+    const toggle=heading?.matches('button')?heading:null;
+    let scope=null,foldedScope=null;
+    if(heading){
+      for(let p=heading.parentElement,depth=0;p&&p!==nav&&depth<15;p=p.parentElement,depth++){
+        // Do not climb into Projects, Writings or the whole navigation panel.
+        const other=[...p.querySelectorAll('button,[role="heading"],h2,h3,h4')]
+          .some(x=>isOtherSection(nameOf(x)));
+        if(other) break;
+        const links=[...p.querySelectorAll('a[href]')].filter(a=>historyIdentity(a));
+        if(links.length) scope=p;
+        if(!foldedScope && (p.matches('section,[role="region"]')
+          || p.querySelector('[class*="expandCollapse"],[role="region"],[data-testid="conversation-list"]')))
+          foldedScope=p;
+      }
     }
-    const scope=accordion||region;
-    if (!scope) throw new Error('尚未找到独立的 Conversations 列表区域；页面可能已更新，未执行删除。');
-    if (/error loading conversations|unable to load conversations|加载会话.*失败|会话.*加载失败/i.test(scope.textContent || '')) {
+    // Older layouts expose an explicitly named Conversations region.
+    if(!scope){
+      const regions=[...nav.querySelectorAll('[role="region"][aria-label],section[aria-label]')]
+        .filter(x=>isHistory(x.getAttribute('aria-label')||''));
+      if(regions.length===1) scope=regions[0];
+    }
+    if(!scope) scope=foldedScope;
+    // Last-resort fallback ONLY for a unique, explicitly typed conversation
+    // list, never for the entire nav or a single conversation item.
+    if(!scope && heading){
+      const rows=[...nav.querySelectorAll('[data-testid="conversation-list-item"]')];
+      const lists=[...new Set(rows.map(row=>row.closest('ul,ol,[role="list"]')))].filter(Boolean);
+      if(lists.length===1 && rows.every(row=>lists[0].contains(row))) scope=lists[0];
+    }
+    if(!scope) throw new Error('未能安全定位 Conversations 列表。请展开左侧聊天栏再预览；未执行删除。');
+    const rows=[...nav.querySelectorAll('[data-testid="conversation-list-item"]')]
+      .filter(row=>[...row.querySelectorAll('a[href]')].some(a=>historyIdentity(a)));
+    if(rows.some(row=>!scope.contains(row)))
+      throw new Error('识别到多个会话区域，无法确认完整范围；未执行删除。');
+    if(/error loading conversations|unable to load conversations|加载会话.*失败|会话.*加载失败/i.test(scope.textContent||''))
       throw new Error('网站会话列表加载失败，未执行任何删除。');
-    }
     return {nav,scope,toggle};
   }
 
@@ -1076,7 +1099,7 @@
     action.click();
     let modalConfirmed=false;
     for(let i=0;i<45;i++) {
-      if(!historyRowById(item.id)) return true;
+      if(modalConfirmed && !historyRowById(item.id)) return true;
       const conf=historyConfirmation();
       if(conf && !modalConfirmed) {
         conf.click();modalConfirmed=true;
