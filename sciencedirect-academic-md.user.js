@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.2
+// @version      1.6.3
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.2';
+  const VERSION = '1.6.3';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -842,58 +842,56 @@
   }
 
   function historyScope() {
-    // Never infer the history list from a fixed number of DOM parents.
-    // LeapSpace uses differently nested accordion / panel layouts depending
-    // on account, viewport and rollout. Start with an exact Conversations
-    // heading and climb only while it remains the sole sidebar section.
     const nav=document.querySelector('[data-testid="left-panel-nav"],nav[aria-label="Left Panel"]');
-    if(!nav) throw new Error('尚未识别左侧会话栏；请在 LeapSpace 登录并展开侧栏。');
-    const isHistory=x=>/^(?:Conversations|会话|聊天记录)$/i.test(x);
-    const isOtherSection=x=>/^(?:Projects|Writings|项目|写作)$/i.test(x);
-    const nameOf=x=>(x.getAttribute('aria-label')||x.textContent||'').replace(/\s+/g,' ').trim();
-    const allLabels=[...nav.querySelectorAll('button,[role="heading"],h2,h3,h4,h5,strong,span')]
-      .filter(x=>isHistory(nameOf(x)));
-    const buttons=allLabels.filter(x=>x.matches('button'));
-    const headed=allLabels.filter(x=>x.matches('[role="heading"],h2,h3,h4,h5'));
-    const candidates=buttons.length?buttons:headed.length?headed:allLabels.filter(x=>x.children.length===0);
-    const heading=candidates.length===1?candidates[0]:null;
-    const toggle=heading?.matches('button')?heading:null;
-    let scope=null,foldedScope=null;
-    if(heading){
-      for(let p=heading.parentElement,depth=0;p&&p!==nav&&depth<15;p=p.parentElement,depth++){
-        // Do not climb into Projects, Writings or the whole navigation panel.
-        const other=[...p.querySelectorAll('button,[role="heading"],h2,h3,h4')]
-          .some(x=>isOtherSection(nameOf(x)));
-        if(other) break;
-        const links=[...p.querySelectorAll('a[href]')].filter(a=>historyIdentity(a));
-        if(links.length) scope=p;
-        if(!foldedScope && (p.matches('section,[role="region"]')
-          || p.querySelector('[class*="expandCollapse"],[role="region"],[data-testid="conversation-list"]')))
-          foldedScope=p;
+    if(!nav || nav.getAttribute('aria-hidden')==='true')
+      throw new Error('左侧聊天栏未展开；请展开 Conversations 后再预览。');
+    const allToggles=[...nav.querySelectorAll('button[aria-label]')]
+      .filter(b=>/^(Conversations|会话|聊天记录)$/i.test((b.getAttribute('aria-label')||'').trim()));
+    const toggle=allToggles.length===1 ? allToggles[0] : null;
+    // LeapSpace 2026 marks actual chat rows with this exact test id. Use the
+    // shared owning list, not a guessed Nth parent or a single list item.
+    // This avoids repeatedly traversing every sidebar control in long lists.
+    const identifiedRows=[...nav.querySelectorAll('[data-testid="conversation-list-item"]')]
+      .filter(row=>[...row.querySelectorAll('a[href]')].some(a=>historyIdentity(a)));
+    if(identifiedRows.length){
+      const lists=[...new Set(identifiedRows.map(row=>row.closest('ul,ol,[role="list"]')))].filter(Boolean);
+      if(lists.length!==1 || identifiedRows.some(row=>!lists[0].contains(row)))
+        throw new Error('发现多组会话列表，无法确认删除范围；未执行删除。');
+      const list=lists[0];
+      // A valid Conversations heading must be present before the identified
+      // list. Never accept a Project/Writing list as the conversation scope.
+      const exactHeading=toggle||[...nav.querySelectorAll('h2,h3,h4,[role="heading"]')]
+        .find(e=>/^(Conversations|会话|聊天记录)$/i.test((e.getAttribute('aria-label')||e.textContent||'').trim()));
+      if(!exactHeading || !(exactHeading.compareDocumentPosition(list)&Node.DOCUMENT_POSITION_FOLLOWING))
+        throw new Error('会话条目存在，但无法核对其 Conversations 标题；未执行删除。');
+      const afterHeading=[...nav.querySelectorAll('button[aria-label]')]
+        .filter(e=>e!==exactHeading && /^(Projects|Writings|项目|写作)$/i.test((e.getAttribute('aria-label')||'').trim()))
+        .some(e=>(exactHeading.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING)
+          && (e.compareDocumentPosition(list)&Node.DOCUMENT_POSITION_FOLLOWING));
+      if(afterHeading) throw new Error('会话列表与其他栏目交错，无法确认范围；未执行删除。');
+      return {nav,scope:list,toggle};
+    }
+    // Older builds may omit the row test id. In that case accept only a
+    // *uniquely named* region, never all of the sidebar and never one row.
+    const named=[...nav.querySelectorAll('[role="region"][aria-label],section[aria-label]')]
+      .filter(e=>/^(Conversations|会话|聊天记录)$/i.test((e.getAttribute('aria-label')||'').trim()));
+    if(named.length===1){
+      const scope=named[0];
+      if(/error loading conversations|unable to load conversations|加载会话.*失败|会话.*加载失败/i.test(scope.textContent||''))
+        throw new Error('网站会话列表加载失败，未执行任何删除。');
+      return {nav,scope,toggle};
+    }
+    if(toggle){
+      const parent=toggle.closest('[class*="accordion"],[class*="component_3kb6b"]');
+      if(parent && parent.querySelector('[class*="expandCollapse"]')
+          && ![...parent.querySelectorAll('button[aria-label]')]
+            .some(b=>b!==toggle && /^(Projects|Writings|项目|写作)$/i.test(b.getAttribute('aria-label')||''))) {
+        if(/error loading conversations|unable to load conversations/i.test(parent.textContent||''))
+          throw new Error('网站会话列表加载失败，未执行任何删除。');
+        return {nav,scope:parent,toggle};
       }
     }
-    // Older layouts expose an explicitly named Conversations region.
-    if(!scope){
-      const regions=[...nav.querySelectorAll('[role="region"][aria-label],section[aria-label]')]
-        .filter(x=>isHistory(x.getAttribute('aria-label')||''));
-      if(regions.length===1) scope=regions[0];
-    }
-    if(!scope) scope=foldedScope;
-    // Last-resort fallback ONLY for a unique, explicitly typed conversation
-    // list, never for the entire nav or a single conversation item.
-    if(!scope && heading){
-      const rows=[...nav.querySelectorAll('[data-testid="conversation-list-item"]')];
-      const lists=[...new Set(rows.map(row=>row.closest('ul,ol,[role="list"]')))].filter(Boolean);
-      if(lists.length===1 && rows.every(row=>lists[0].contains(row))) scope=lists[0];
-    }
-    if(!scope) throw new Error('未能安全定位 Conversations 列表。请展开左侧聊天栏再预览；未执行删除。');
-    const rows=[...nav.querySelectorAll('[data-testid="conversation-list-item"]')]
-      .filter(row=>[...row.querySelectorAll('a[href]')].some(a=>historyIdentity(a)));
-    if(rows.some(row=>!scope.contains(row)))
-      throw new Error('识别到多个会话区域，无法确认完整范围；未执行删除。');
-    if(/error loading conversations|unable to load conversations|加载会话.*失败|会话.*加载失败/i.test(scope.textContent||''))
-      throw new Error('网站会话列表加载失败，未执行任何删除。');
-    return {nav,scope,toggle};
+    throw new Error('没有找到可核验的 Conversations 列表；请展开侧栏并刷新。未执行删除。');
   }
 
   function visibleHistoryAnchors(scope) {
@@ -907,8 +905,22 @@
 
   function historyListMore(scope) {
     const pattern = /^(?:load more(?: conversations)?|show more(?: conversations)?|view (?:more|all)(?: conversations)?|see (?:more|all)(?: conversations)?|load older(?: conversations)?|show older(?: conversations)?|older conversations|加载更多(?:会话)?|查看更多(?:会话)?|更多会话|显示更多(?:会话)?|查看全部(?:会话)?)$/i;
-    return [...scope.querySelectorAll('button,[role="button"],a')]
-      .find(el => historyVisible(el) && pattern.test((el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g,' ').trim())) || null;
+    const nav=document.querySelector('[data-testid="left-panel-nav"]');
+    const scopes=[scope];
+    // Real and simulated lazy lists place Load More just after the <ul>,
+    // not inside it. Include only an immediate, section-local parent.
+    const parent=scope?.parentElement;
+    if(parent && parent!==nav && ![...parent.querySelectorAll('button[aria-label]')]
+      .some(b=>/^(Projects|Writings|项目|写作)$/i.test((b.getAttribute('aria-label')||'').trim()))) {
+      scopes.push(parent);
+    }
+    for (const root of scopes) {
+      const matches=[...root.querySelectorAll('button,[role="button"],a')]
+        .filter(el=>historyVisible(el)&&pattern.test((el.getAttribute('aria-label')||el.textContent||'').replace(/\s+/g,' ').trim()));
+      if(matches.length===1) return matches[0];
+      if(matches.length>1) return null; // Ambiguous; never click unrelated controls.
+    }
+    return null;
   }
 
   function historyScroller(scope,nav) {
