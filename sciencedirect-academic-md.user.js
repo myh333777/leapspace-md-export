@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.5
+// @version      1.6.6
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.5';
+  const VERSION = '1.6.6';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -1133,26 +1133,37 @@
         await historyDelay(140,signal);
         action=historyDeleteAction(existingMenus);
       }
+      if(!action) throw new Error('未找到唯一的“删除会话”操作，已中止，不会猜测按钮。');
+      action.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
+      action.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
+      action.click();
+      const reactActionKey = Object.keys(action).find(k => k.startsWith('__reactProps') || k.startsWith('__reactEventHandlers'));
+      if (action[reactActionKey]?.onClick) {
+        try { action[reactActionKey].onClick({ preventDefault(){}, stopPropagation(){} }); } catch {}
+      }
+      await historyDelay(180,signal);
     } finally {
       if (originalStyle===null) control.removeAttribute('style');
       else control.setAttribute('style',originalStyle);
     }
-    if(!action) throw new Error('未找到唯一的“删除会话”操作，已中止，不会猜测按钮。');
-    action.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
-    action.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
-    action.click();
+
     let modalConfirmed=false;
-    for(let i=0;i<45;i++) {
-      if(modalConfirmed && !historyRowById(item.id)) return true;
+    const activeId = location.pathname.match(HISTORY_ITEM_RE)?.[1] || '';
+    for(let i=0;i<60;i++) {
+      if(modalConfirmed && (!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id)))) return true;
       const conf=historyConfirmation();
       if(conf && !modalConfirmed) {
         conf.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
         conf.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
         conf.click();
+        const reactConfKey = Object.keys(conf).find(k => k.startsWith('__reactProps') || k.startsWith('__reactEventHandlers'));
+        if (conf[reactConfKey]?.onClick) {
+          try { conf[reactConfKey].onClick({ preventDefault(){}, stopPropagation(){} }); } catch {}
+        }
         modalConfirmed=true;
-        if(!historyRowById(item.id)) return true;
+        if(!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id))) return true;
       }
-      await historyDelay(170,signal);
+      await historyDelay(180,signal);
     }
     throw new Error('无法确认会话已从列表消失（可能正在等待网站确认），已停止后续删除；请核对当前页面。');
   }
