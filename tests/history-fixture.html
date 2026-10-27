@@ -30,6 +30,8 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
   const broken=params.get('broken')==='1';
   const accordion=params.get('accordion')==='1';
   const pointerOnly=params.get('pointer_only')==='1';
+  const deep=params.get('deep')==='1';
+  const flat=params.get('flat')==='1';
   if(accordion){
     const nav=document.querySelector('[data-testid="left-panel-nav"]');
     const original=nav.querySelector('section[aria-label="Conversations"]');
@@ -47,8 +49,29 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
       toggle.setAttribute('aria-expanded',String(!expanded));
       expanding.hidden=expanded;
     });
-    accordionComponent.append(headerContainer,expanding);
+    if(deep){
+      let nested=headerContainer;
+      for(let i=0;i<4;i++){
+        const wrapper=document.createElement('div');
+        wrapper.setAttribute('data-test-nested',String(i));
+        wrapper.append(nested);
+        nested=wrapper;
+      }
+      accordionComponent.append(nested,expanding);
+    }else accordionComponent.append(headerContainer,expanding);
     nav.append(accordionComponent);
+    const outside=document.createElement('section');
+    outside.setAttribute('aria-label','Projects');
+    outside.innerHTML='<a href="/leapspace/conversation/ffffffff-ffff-4fff-8fff-ffffffffffff">Decoy project link</a>';
+    nav.prepend(outside);
+  }
+  if(flat){
+    const nav=document.querySelector('[data-testid="left-panel-nav"]');
+    const original=nav.querySelector('section[aria-label="Conversations"]');
+    const flatSection=document.createElement('div');
+    flatSection.setAttribute('data-test-flat-conversations','');
+    while(original.firstChild) flatSection.append(original.firstChild);
+    original.replaceWith(flatSection);
     const outside=document.createElement('section');
     outside.setAttribute('aria-label','Projects');
     outside.innerHTML='<a href="/leapspace/conversation/ffffffff-ffff-4fff-8fff-ffffffffffff">Decoy project link</a>';
@@ -62,7 +85,7 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
   }));
   const state={records,deleted:[],rendered:0,menuClicks:0,modalClicks:0};
   window.__TEST_HISTORY__=state;
-  if(broken) {document.getElementById('history-list').closest('section').innerHTML='<p>Error loading conversations</p>';return;}
+  if(broken) {document.getElementById('history-list').parentElement.innerHTML='<p>Error loading conversations</p>';return;}
   function clearPopups(){document.querySelectorAll('[data-test-site-popup]').forEach(e=>e.remove());}
   function confirmDelete(row,record){
     clearPopups();
@@ -85,7 +108,7 @@ li:hover [data-test-pointer-only]{display:inline-flex;opacity:1}
     const from=state.rendered,to=Math.min(total,from+10);
     records.slice(from,to).forEach(record=>{
       const li=document.createElement('li');
-      if(accordion)li.setAttribute('data-testid','conversation-list-item');
+      if(accordion || flat)li.setAttribute('data-testid','conversation-list-item');
       const a=document.createElement('a');a.href='/leapspace/conversation/'+record.id;a.textContent=record.title;
       const action=document.createElement('button');action.type='button';
       action.setAttribute('aria-label',unknown?'Unrecognised action':'More options');
