@@ -853,8 +853,9 @@
     const nameOf=x=>(x.getAttribute('aria-label')||x.textContent||'').replace(/\s+/g,' ').trim();
     const allLabels=[...nav.querySelectorAll('button,[role="heading"],h2,h3,h4,h5,strong,span')]
       .filter(x=>isHistory(nameOf(x)));
-    const headed=allLabels.filter(x=>x.matches('button,[role="heading"],h2,h3,h4,h5'));
-    const candidates=headed.length?headed:allLabels.filter(x=>x.children.length===0);
+    const buttons=allLabels.filter(x=>x.matches('button'));
+    const headed=allLabels.filter(x=>x.matches('[role="heading"],h2,h3,h4,h5'));
+    const candidates=buttons.length?buttons:headed.length?headed:allLabels.filter(x=>x.children.length===0);
     const heading=candidates.length===1?candidates[0]:null;
     const toggle=heading?.matches('button')?heading:null;
     let scope=null,foldedScope=null;
