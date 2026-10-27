@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic-only Playwright tests for LeapSpace history cleanup.
-
-Never points at a logged-in browser. Every target request is fulfilled from
-the checked-in inert local HTML fixture.
-"""
+"""Synthetic-only Playwright regression tests; no live account is accessed."""
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 import os
@@ -14,265 +10,247 @@ SCRIPT = ROOT / "sciencedirect-academic-md.user.js"
 URL = "https://www.sciencedirect.com/leapspace/?fixture_only=1"
 
 
-def setup(browser, *, count=75, unknown=False, broken=False, accordion=False, pointer_only=False, deep=False, flat=False, reorder=False, delayed=False):
+def setup(browser, *, count=75, unknown=False, broken=False, accordion=False,
+          pointer_only=False, deep=False, flat=False, reorder=False, delayed=False):
     context = browser.new_context(viewport={"width": 1280, "height": 850})
     page = context.new_page()
     context.route("https://www.sciencedirect.com/**",
-                  lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8", body=FIXTURE))
+                  lambda route: route.fulfill(
+                      status=200, content_type="text/html; charset=utf-8", body=FIXTURE))
     page.add_init_script("window.__LS_MD_EXPORT_TEST__ = true;")
-    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}&accordion={int(accordion)}&pointer_only={int(pointer_only)}&deep={int(deep)}&flat={int(flat)}&reorder={int(reorder)}&delayed={int(delayed)}")
+    page.goto(URL + f"&count={count}&unknown={int(unknown)}&broken={int(broken)}"
+              f"&accordion={int(accordion)}&pointer_only={int(pointer_only)}"
+              f"&deep={int(deep)}&flat={int(flat)}&reorder={int(reorder)}"
+              f"&delayed={int(delayed)}")
     page.add_script_tag(path=str(SCRIPT))
     page.get_by_role("button", name="导出设置").click()
     page.get_by_role("button", name="清理聊天记录…").click()
+    assert page.locator(".ls-history-preview-list,.ls-history-ack-input,"
+                        ".ls-history-phrase-input,.ls-history-confirm").count() == 0
+    assert page.get_by_role("button", name="开始清理").is_enabled()
     return context, page
 
 
+def start(page):
+    page.get_by_role("button", name="开始清理").click()
+
+
+def expect_done(page, done, total, timeout=30000):
+    page.get_by_text(f"已完成：已确认删除 {done}/{total} 条", exact=False).wait_for(
+        timeout=timeout)
+
+
+def expect_stopped(page, done, total, timeout=18000):
+    page.get_by_text(f"已停止：已确认删除 {done}/{total} 条", exact=False).wait_for(
+        timeout=timeout)
+
+
 def check_recent_50(browser):
-    context,page = setup(browser)
+    context, page = setup(browser)
     try:
-        field = page.get_by_role("spinbutton", name="删除最近几条")
-        assert field.input_value() == "50"
-        page.get_by_role("button", name="预览", exact=True).click()
-        page.get_by_text("待删除 50 条", exact=False).wait_for(timeout=15000)
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 0
-        page.get_by_role("checkbox", name="我理解记录删除后可能无法恢复").check()
-        page.once("dialog", lambda d: d.accept())
-        page.get_by_role("button", name="确认删除").click()
-        page.get_by_text("已完成：已确认删除 50/50 条", exact=False).wait_for(timeout=24000)
-        ids = page.evaluate("window.__TEST_HISTORY__.deleted")
-        assert len(ids) == 50, (len(ids), ids[-3:])
-        # No older records are deleted.
-        assert ids[0].endswith("000000000001")
-        assert ids[-1].endswith("000000000050")
-        print("PASS recent50 preview -> native-menu -> dialog -> 50 verified removals")
+        assert page.get_by_role("spinbutton", name="删除最近几条").input_value() == "50"
+        start(page)
+        expect_done(page, 50, 50, 45000)
+        deleted = page.evaluate("window.__TEST_HISTORY__.deleted")
+        assert len(deleted) == 50
+        assert deleted[0].endswith("000000000001")
+        assert deleted[-1].endswith("000000000050")
+        print("PASS one-click recent50: exact 50 deleted, older records preserved", flush=True)
     finally:
         context.close()
 
 
-def check_all_confirmation(browser):
-    context,page = setup(browser,count=65)
+def check_all_without_extra_confirmation(browser):
+    context, page = setup(browser, count=65)
     try:
         page.get_by_role("radio", name="全部可加载的会话").check()
-        page.get_by_role("button", name="预览", exact=True).click()
-        page.get_by_text("待删除 65 条", exact=False).wait_for(timeout=18000)
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
-        page.get_by_role("checkbox", name="我理解记录删除后可能无法恢复").check()
-        confirm=page.get_by_role("button",name="确认删除")
-        assert confirm.is_disabled(), "Must require typed all-delete phrase"
-        page.locator(".ls-history-phrase-input").fill("删除全部")
-        assert confirm.is_enabled()
-        page.once("dialog",lambda d:d.dismiss())
-        confirm.click()
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 0, "Native confirm dismissed, no deletion permitted"
-        page.once("dialog",lambda d:d.accept())
-        confirm.click()
-        page.get_by_text("已完成：已确认删除 65/65 条", exact=False).wait_for(timeout=30000)
-        assert len(page.evaluate("window.__TEST_HISTORY__.deleted")) == 65
-        print("PASS all65 phrase gate, modal cancel gate, 65 verified deletions")
+        page.evaluate("() => {window.__TEST_CONFIRM_CALLED=0;window.confirm=()=>{window.__TEST_CONFIRM_CALLED++;return false};}")
+        prompts = []
+        page.on("dialog", lambda d: (prompts.append(d.message), d.dismiss()))
+        start(page)
+        expect_done(page, 65, 65, 50000)
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 65
+        assert page.evaluate("window.__TEST_CONFIRM_CALLED") == 0
+        assert prompts == [], prompts
+        print("PASS all65 starts from one click without browser confirm or typed phrase", flush=True)
     finally:
         context.close()
 
 
 def check_unknown_menu(browser):
-    context,page=setup(browser,count=10,unknown=True)
+    context, page = setup(browser, count=10, unknown=True)
     try:
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 10 条",exact=False).wait_for(timeout=16000)
-        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
-        page.once("dialog",lambda d:d.accept())
-        page.get_by_role("button",name="确认删除").click()
-        page.get_by_text("已停止：已确认删除 0/10 条",exact=False).wait_for(timeout=16000)
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
-        print("PASS unknown DOM menu fail-closed; no synthetic conversations removed")
+        start(page)
+        expect_stopped(page, 0, 10)
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 0
+        print("PASS unknown menu fails closed", flush=True)
     finally:
         context.close()
 
 
 def check_load_failure(browser):
-    context,page=setup(browser,count=10,broken=True)
+    context, page = setup(browser, count=10, broken=True)
     try:
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("扫描失败",exact=False).wait_for(timeout=9000)
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
-        assert page.get_by_role("button",name="确认删除").is_disabled()
-        print("PASS history load error blocks deletion")
+        start(page)
+        expect_stopped(page, 0, 0)
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 0
+        print("PASS load failure safely stops before any deletion", flush=True)
     finally:
         context.close()
 
 
 def check_count_changed(browser):
-    context,page=setup(browser,count=75)
+    context, page = setup(browser, count=75)
     try:
-        count=page.get_by_role("spinbutton",name="删除最近几条")
-        count.fill("12")
-        count.dispatch_event("change")
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 12 条",exact=False).wait_for(timeout=13000)
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
-        page.get_by_role("button",name="关闭清理").click()
-        page.get_by_role("button",name="导出设置").click()
-        page.get_by_role("button",name="清理聊天记录…").click()
-        assert page.get_by_role("spinbutton",name="删除最近几条").input_value()=="12"
-        print("PASS recent N persisted, preview not a destructive action")
+        number = page.get_by_role("spinbutton", name="删除最近几条")
+        number.fill("12")
+        number.dispatch_event("change")
+        start(page)
+        expect_done(page, 12, 12)
+        assert len(page.evaluate("window.__TEST_HISTORY__.deleted")) == 12
+        page.get_by_role("button", name="关闭清理").click()
+        page.get_by_role("button", name="导出设置").click()
+        page.get_by_role("button", name="清理聊天记录…").click()
+        assert page.get_by_role("spinbutton", name="删除最近几条").input_value() == "12"
+        print("PASS recent N=12 one-click and preference persistence", flush=True)
     finally:
         context.close()
 
 
 def check_stop_between_items(browser):
-    context,page=setup(browser,count=25)
+    context, page = setup(browser, count=25)
     try:
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 25 条",exact=False).wait_for(timeout=14000)
-        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
-        # Site-simulation hook invokes the plugin Stop button after exactly
-        # three synthetic confirmations. This never touches user data.
         page.evaluate("window.__TEST_STOP_AFTER=3")
-        page.once("dialog",lambda d:d.accept())
-        page.get_by_role("button",name="确认删除").click()
-        page.get_by_text("已停止：已确认删除 3/25 条",exact=False).wait_for(timeout=16000)
-        deleted=page.evaluate("window.__TEST_HISTORY__.deleted")
-        assert len(deleted)==3
-        assert deleted[-1].endswith("000000000003")
-        print("PASS Stop cancels remaining 22 items; accurately counts 3 completed")
+        start(page)
+        expect_stopped(page, 3, 25)
+        deleted = page.evaluate("window.__TEST_HISTORY__.deleted")
+        assert len(deleted) == 3 and deleted[-1].endswith("000000000003")
+        print("PASS Stop after 3: remaining 22 untouched; accurate count", flush=True)
     finally:
         context.close()
 
 
 def check_real_accordion_pointer_menu(browser):
-    """Mirror the real 2026 DOM: accordion wrapper + hidden pointerdown menu."""
-    context,page=setup(browser,count=8,accordion=True,pointer_only=True)
+    context, page = setup(browser, count=8, accordion=True, pointer_only=True)
     try:
-        # Decoy link outside the actual conversation accordion must be excluded.
-        before=page.evaluate("""() => {
+        before = page.evaluate("""() => {
           const api=window.__LS_MD_EXPORT_API__, found=api.historyScope();
-          return {isNav:found.scope===found.nav, aria:found.toggle?.getAttribute('aria-expanded'),
+          return {isNav:found.scope===found.nav,
+                  aria:found.toggle?.getAttribute('aria-expanded'),
                   count:api.visibleHistoryAnchors(found.scope).length};
         }""")
-        assert before["isNav"] is False, before
-        assert before["aria"] == "false", before
-        assert before["count"] == 8, before
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 8 条",exact=False).wait_for(timeout=14000)
-        expanded=page.evaluate("""()=>document.querySelector('[data-testid=left-panel-nav] button[aria-label=Conversations]').getAttribute('aria-expanded')""")
-        assert expanded == "true", expanded
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 0
-        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
-        page.once("dialog",lambda d:d.accept())
-        page.get_by_role("button",name="确认删除").click()
-        page.get_by_text("已完成：已确认删除 8/8 条",exact=False).wait_for(timeout=20000)
-        deleted=page.evaluate("window.__TEST_HISTORY__.deleted")
-        assert len(deleted) == 8, deleted
-        assert page.locator('[aria-label="Projects"] a[href*="/leapspace/conversation/"]').count()==1
-        print("PASS real-style accordion + hidden pointerdown menu, 8/8 synthetic deletes, decoy untouched")
+        assert before == {"isNav": False, "aria": "false", "count": 8}, before
+        start(page)
+        expect_done(page, 8, 8)
+        expanded = page.evaluate("""()=>document.querySelector(
+          '[data-testid=left-panel-nav] button[aria-label=Conversations]'
+          ).getAttribute('aria-expanded')""")
+        assert expanded == "true"
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 8
+        assert page.locator('[aria-label="Projects"] a[href*="/leapspace/conversation/"]').count() == 1
+        print("PASS real-shaped accordion with hidden pointer menu, project link preserved", flush=True)
     finally:
         context.close()
 
 
 def check_reorder_keeps_frozen_ids(browser):
-    context,page=setup(browser,count=8,reorder=True)
+    context, page = setup(browser, count=8, reorder=True)
     try:
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 8 条",exact=False).wait_for(timeout=12000)
-        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
-        page.once("dialog",lambda d:d.accept())
-        page.get_by_role("button",name="确认删除").click()
-        page.get_by_text("已完成：已确认删除 8/8 条",exact=False).wait_for(timeout=20000)
-        deleted=page.evaluate("window.__TEST_HISTORY__.deleted")
-        assert len(deleted)==8 and all(x.endswith(str(i).zfill(12)) for i,x in enumerate(deleted,1)),deleted
-        assert page.get_by_text("Inserted unrelated conversation").count()==1
-        print("PASS frozen IDs prevent deleting a new/unselected chat inserted mid-batch")
+        start(page)
+        expect_done(page, 8, 8)
+        deleted = page.evaluate("window.__TEST_HISTORY__.deleted")
+        assert len(deleted) == 8
+        assert all(x.endswith(str(i).zfill(12)) for i, x in enumerate(deleted, 1)), deleted
+        assert page.get_by_text("Inserted unrelated conversation").count() == 1
+        print("PASS unrelated new conversation inserted mid-run is not deleted", flush=True)
     finally:
         context.close()
 
 
 def check_slow_confirmation_at_most_once(browser):
-    context,page=setup(browser,count=8,delayed=True)
+    context, page = setup(browser, count=8, delayed=True)
     try:
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 8 条",exact=False).wait_for(timeout=12000)
-        page.get_by_role("checkbox",name="我理解记录删除后可能无法恢复").check()
-        page.once("dialog",lambda d:d.accept())
-        page.get_by_role("button",name="确认删除").click()
-        page.get_by_text("已完成：已确认删除 8/8 条",exact=False).wait_for(timeout=20000)
-        state=page.evaluate("window.__TEST_HISTORY__")
-        assert len(state["deleted"])==8 and state["confirmAttempts"]==8, state
-        print("PASS slow async confirmation does not trigger duplicate delete requests")
+        start(page)
+        expect_done(page, 8, 8)
+        state = page.evaluate("window.__TEST_HISTORY__")
+        assert len(state["deleted"]) == 8 and state["confirmAttempts"] == 8, state
+        print("PASS delayed native confirmation submitted only once per item", flush=True)
     finally:
         context.close()
 
 
 def check_accordion_load_error(browser):
-    context,page=setup(browser,count=7,accordion=True,pointer_only=True,broken=True)
+    context, page = setup(browser, count=7, accordion=True,
+                          pointer_only=True, broken=True)
     try:
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("扫描失败",exact=False).wait_for(timeout=9000)
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
-        assert page.get_by_role("button",name="确认删除").is_disabled()
-        print("PASS accordion history-load error fails closed")
+        start(page)
+        expect_stopped(page, 0, 0)
+        assert page.evaluate("window.__TEST_HISTORY__.deleted.length") == 0
+        print("PASS accordion loading failure fails closed", flush=True)
     finally:
         context.close()
 
 
-def check_flat_sidebar_51_preview_only(browser):
-    """Regression: screenshot-like flat heading with no labeled region."""
-    context,page=setup(browser,count=64,flat=True)
+def check_flat_sidebar_51(browser):
+    context, page = setup(browser, count=64, flat=True)
     try:
-        count=page.get_by_role("spinbutton",name="删除最近几条")
+        count = page.get_by_role("spinbutton", name="删除最近几条")
         count.fill("51")
         count.dispatch_event("change")
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 51 条",exact=False).wait_for(timeout=18000)
-        status=page.locator(".ls-history-status").inner_text()
-        assert "扫描失败" not in status, status
-        ids=page.evaluate("""() => {
-          const api=window.__LS_MD_EXPORT_API__, data=api.historyScope();
-          return {count:api.visibleHistoryAnchors(data.scope).length,
-            isNav:data.scope===data.nav};
-        }""")
-        assert ids["isNav"] is False
-        assert 51 <= ids["count"] <= 64, ids
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
-        assert page.get_by_role("button",name="确认删除").is_disabled()
-        print("PASS screenshot-style flat Conversations + recent 51 preview; zero deletions")
+        start(page)
+        expect_done(page, 51, 51, 55000)
+        deleted = page.evaluate("window.__TEST_HISTORY__.deleted")
+        assert len(deleted) == 51
+        assert deleted[-1].endswith("000000000051")
+        assert page.locator('[aria-label="Projects"] a[href*="/leapspace/conversation/"]').count() == 1
+        print("PASS flat Conversations scope recent51, project decoy protected", flush=True)
     finally:
         context.close()
 
 
-def check_deep_sidebar_51_preview_only(browser):
-    """Regression: accordion toggle may be >3 parents from list."""
-    context,page=setup(browser,count=64,accordion=True,deep=True,pointer_only=True)
+def check_deep_sidebar_51(browser):
+    context, page = setup(browser, count=64, accordion=True,
+                          deep=True, pointer_only=True)
     try:
-        count=page.get_by_role("spinbutton",name="删除最近几条")
+        count = page.get_by_role("spinbutton", name="删除最近几条")
         count.fill("51")
         count.dispatch_event("change")
-        page.get_by_role("button",name="预览",exact=True).click()
-        page.get_by_text("待删除 51 条",exact=False).wait_for(timeout=18000)
-        status=page.locator(".ls-history-status").inner_text()
-        assert "扫描失败" not in status, status
-        assert page.evaluate("window.__TEST_HISTORY__.deleted.length")==0
-        assert page.get_by_role("button",name="确认删除").is_disabled()
-        # A decoy Projects link must never appear in the selected scope.
-        result=page.evaluate("""() => {
-           const api=window.__LS_MD_EXPORT_API__, data=api.historyScope();
-           return {count:api.visibleHistoryAnchors(data.scope).length,
-                   isNav:data.scope===data.nav};
+        start(page)
+        expect_done(page, 51, 51, 55000)
+        deleted = page.evaluate("window.__TEST_HISTORY__.deleted")
+        assert len(deleted) == 51
+        assert deleted[-1].endswith("000000000051")
+        assert page.locator('[aria-label="Projects"] a[href*="/leapspace/conversation/"]').count() == 1
+        print("PASS deep accordion recent51, decoy untouched", flush=True)
+    finally:
+        context.close()
+
+
+def check_double_click_single_run(browser):
+    context, page = setup(browser, count=8, delayed=True)
+    try:
+        page.evaluate("""() => {
+          const b=document.querySelector('.ls-history-scan');b.click();b.click();
         }""")
-        assert 51 <= result["count"] <= 64 and result["isNav"] is False, result
-        print("PASS deep accordion Conversations + recent 51 preview; zero deletions")
+        expect_done(page, 8, 8)
+        state=page.evaluate("window.__TEST_HISTORY__")
+        assert len(state["deleted"]) == 8 and state["confirmAttempts"] == 8, state
+        print("PASS rapid double click cannot schedule duplicate batches", flush=True)
     finally:
         context.close()
 
 
 if __name__ == "__main__":
     with sync_playwright() as pw:
-        local_chromium = Path('/opt/homebrew/bin/chromium')
-        executable = os.environ.get('CHROMIUM_BIN') or (str(local_chromium) if local_chromium.exists() else None)
-        opts = {'headless': True, 'args': ['--no-sandbox']}
-        if executable: opts['executable_path'] = executable
-        browser = pw.chromium.launch(**opts)
+        local_chromium=Path("/opt/homebrew/bin/chromium")
+        executable=os.environ.get("CHROMIUM_BIN") or (
+            str(local_chromium) if local_chromium.exists() else None)
+        opts={"headless": True, "args": ["--no-sandbox"]}
+        if executable: opts["executable_path"]=executable
+        browser=pw.chromium.launch(**opts)
         try:
             check_recent_50(browser)
-            check_all_confirmation(browser)
+            check_all_without_extra_confirmation(browser)
             check_unknown_menu(browser)
             check_load_failure(browser)
             check_count_changed(browser)
@@ -281,8 +259,9 @@ if __name__ == "__main__":
             check_reorder_keeps_frozen_ids(browser)
             check_slow_confirmation_at_most_once(browser)
             check_accordion_load_error(browser)
-            check_flat_sidebar_51_preview_only(browser)
-            check_deep_sidebar_51_preview_only(browser)
+            check_flat_sidebar_51(browser)
+            check_deep_sidebar_51(browser)
+            check_double_click_single_run(browser)
         finally:
             browser.close()
-    print("PASS 12 scenarios, all offline / simulated")
+    print("PASS 13 scenarios, offline / simulated", flush=True)

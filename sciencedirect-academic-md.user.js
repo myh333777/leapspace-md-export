@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.9
-// @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
+// @version      1.6.10
+// @description  学术综述 Markdown 导出、完整文献摘要与点击即执行的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
 // @match        https://www.sciencedirect.com/researcher-ai*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.9';
+  const VERSION = '1.6.10';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -1316,15 +1316,11 @@
 #${APP_ID} .ls-history-info{color:#718096;font-size:11px;line-height:1.5;margin:6px 0}
 #${APP_ID} .ls-history-status{font-size:11px;line-height:1.5;padding:6px 0;white-space:normal;overflow-wrap:anywhere}
 #${APP_ID} .ls-history-status.error{color:#b42318}
-#${APP_ID} .ls-history-preview-list{max-height:135px;overflow:auto;margin:6px 0;padding-left:19px;font-size:11px;color:#66758a}
-#${APP_ID} .ls-history-preview-list li{padding:1px 0;overflow-wrap:anywhere}
-#${APP_ID} .ls-history-ack,#${APP_ID} .ls-history-phrase{font-size:11px;display:flex;gap:6px;align-items:center;margin:8px 0}
-#${APP_ID} .ls-history-phrase input{width:115px;min-width:0;padding:4px 6px;border:1px solid #d5dbe4;border-radius:6px;background:transparent;color:inherit}
 #${APP_ID} .ls-history-actions{display:flex;align-items:center;gap:7px;margin-top:10px}
 #${APP_ID} .ls-history-actions button{padding:7px 10px;border-radius:7px;border:1px solid #ccd4df;color:#34465c}
-#${APP_ID} .ls-history-actions .ls-history-confirm{background:#a22b2b;color:#fff;border-color:#a22b2b}
+#${APP_ID} .ls-history-actions .ls-history-scan{background:#a22b2b;color:#fff;border-color:#a22b2b}
 #${APP_ID} .ls-history-actions button:disabled{opacity:.4;cursor:default}
-#${APP_ID} .ls-history-actions [hidden],#${APP_ID} .ls-history-ack[hidden],#${APP_ID} .ls-history-phrase[hidden]{display:none!important}
+#${APP_ID} .ls-history-actions [hidden]{display:none!important}
 
 #${APP_ID} .ls-copy{padding:4px 0!important;color:#255f80;font-weight:600}
 #${APP_ID} .ls-copy:hover{text-decoration:underline}
@@ -1333,7 +1329,7 @@
 #${APP_ID} .ls-toast.error{color:#b42318;border-color:#efb2ae}
 #${APP_ID} .ls-toast.ok{color:#23513f}
 @media(max-width:650px){#${APP_ID}{right:9px;bottom:10px}#${APP_ID} .ls-history-dialog{right:9px;bottom:61px}}
-@media(prefers-color-scheme:dark){#${APP_ID} .ls-bar,#${APP_ID} .ls-settings,#${APP_ID} .ls-toast{background:#1e2631;border-color:#435163;box-shadow:0 5px 20px rgba(0,0,0,.3)}#${APP_ID} .ls-option,#${APP_ID} .ls-heading{color:#e4ebf3}#${APP_ID} .ls-download{background:#316581}#${APP_ID} .ls-download:hover{background:#427b9a}#${APP_ID} .ls-settings-btn{color:#bdc8d3}#${APP_ID} .ls-settings-btn:hover,#${APP_ID} .ls-settings-btn[aria-expanded=true]{background:#324558}#${APP_ID} .ls-settings-foot,#${APP_ID} .ls-history-entry{border-color:#46505f}#${APP_ID} .ls-history-dialog{background:#1e2631;border-color:#435163;color:#dce5ef}#${APP_ID} .ls-history-preview-list,#${APP_ID} .ls-history-info{color:#a5b4c5}#${APP_ID} .ls-copy{color:#9dccea}#${APP_ID} .ls-toast{color:#d3dce6}#${APP_ID} .ls-toast.ok{color:#9dd5b5}#${APP_ID} .ls-toast.error{color:#ffb3a8}}
+@media(prefers-color-scheme:dark){#${APP_ID} .ls-bar,#${APP_ID} .ls-settings,#${APP_ID} .ls-toast{background:#1e2631;border-color:#435163;box-shadow:0 5px 20px rgba(0,0,0,.3)}#${APP_ID} .ls-option,#${APP_ID} .ls-heading{color:#e4ebf3}#${APP_ID} .ls-download{background:#316581}#${APP_ID} .ls-download:hover{background:#427b9a}#${APP_ID} .ls-settings-btn{color:#bdc8d3}#${APP_ID} .ls-settings-btn:hover,#${APP_ID} .ls-settings-btn[aria-expanded=true]{background:#324558}#${APP_ID} .ls-settings-foot,#${APP_ID} .ls-history-entry{border-color:#46505f}#${APP_ID} .ls-history-dialog{background:#1e2631;border-color:#435163;color:#dce5ef}#${APP_ID} #${APP_ID} .ls-history-info{color:#a5b4c5}#${APP_ID} .ls-copy{color:#9dccea}#${APP_ID} .ls-toast{color:#d3dce6}#${APP_ID} .ls-toast.ok{color:#9dd5b5}#${APP_ID} .ls-toast.error{color:#ffb3a8}}
 </style>
 <div class="ls-bar">
  <button type="button" class="ls-download" title="导出当前会话为 Markdown" aria-label="导出 Markdown">
@@ -1355,12 +1351,9 @@
  <div class="ls-history-head"><span>清理聊天记录</span><button type="button" class="ls-history-close" aria-label="关闭清理">×</button></div>
  <label class="ls-history-choice"><input type="radio" name="ls-history-mode" value="recent" checked> 最近 <input class="ls-history-count" type="number" min="1" max="500" step="1" value="50" aria-label="删除最近几条"> 条</label>
  <label class="ls-history-choice"><input type="radio" name="ls-history-mode" value="all"> 全部可加载的会话</label>
- <div class="ls-history-info">按左侧会话列表由新到旧；先预览再删除。删除可能无法恢复，不使用隐藏接口。</div>
- <div class="ls-history-status" role="status" aria-live="polite">先检查待删范围。</div>
- <ol class="ls-history-preview-list"></ol>
- <label class="ls-history-ack" hidden><input type="checkbox" class="ls-history-ack-input"> 我理解记录删除后可能无法恢复</label>
- <label class="ls-history-phrase" hidden>输入“删除全部”<input type="text" class="ls-history-phrase-input" autocomplete="off"></label>
- <div class="ls-history-actions"><button type="button" class="ls-history-scan">预览</button><button type="button" class="ls-history-confirm" disabled>确认删除</button><button type="button" class="ls-history-stop" hidden>停止</button></div>
+ <div class="ls-history-info">按所选范围从新到旧清理；点击开始即执行，删除后无法恢复。</div>
+ <div class="ls-history-status" role="status" aria-live="polite">选择范围后点击开始。</div>
+ <div class="ls-history-actions"><button type="button" class="ls-history-scan">开始清理</button><button type="button" class="ls-history-stop" hidden>停止</button></div>
 </div>
 <div class="ls-toast" role="status" aria-live="polite" hidden></div>`;
     document.body.append(el);
@@ -1410,47 +1403,33 @@
     };
 
 
-    // Destructive history controls are intentionally nested under Settings and
-    // remain inert until the user previews, accepts the loss, and confirms.
+    // UI controls for selecting the cleanup scope.
     const historyEl=el.querySelector('.ls-history-dialog');
     const historyStatus=el.querySelector('.ls-history-status');
-    const historyList=el.querySelector('.ls-history-preview-list');
     const historyCount=el.querySelector('.ls-history-count');
-    const historyAck=el.querySelector('.ls-history-ack-input');
-    const historyPhrase=el.querySelector('.ls-history-phrase-input');
-    const historyConfirm=el.querySelector('.ls-history-confirm');
-    const historyScanButton=el.querySelector('.ls-history-scan');
+    const historyStartButton=el.querySelector('.ls-history-scan');
     const historyStopButton=el.querySelector('.ls-history-stop');
-    let historyPlan=null, historyController=null, historyRunning=false;
+    let historyController=null, historyRunning=false;
     try {
       const value=typeof GM_getValue==='function' ? GM_getValue(HISTORY_COUNT_KEY,50) : localStorage.getItem(HISTORY_COUNT_KEY);
       const n=Number(value);
       if(Number.isInteger(n) && n>=1 && n<=500) historyCount.value=String(n);
-    } catch {/* Count only; no private conversations are persisted. */}
+    }catch {/* Preference only. */}
     const historyMode=()=>el.querySelector('input[name="ls-history-mode"]:checked')?.value||'recent';
     const historyMessage=(msg,error=false)=>{
       historyStatus.textContent=msg;
       historyStatus.classList.toggle('error',Boolean(error));
     };
-    const historyReady=()=> {
-      historyConfirm.disabled=!historyPlan || historyRunning || !historyAck.checked ||
-        (historyPlan.mode==='all' && historyPhrase.value.trim()!=='删除全部');
-    };
-    const invalidateHistory=()=>{
-      if(historyRunning) return;
-      historyPlan=null;
-      historyList.replaceChildren();
-      historyAck.checked=false;
-      historyPhrase.value='';
-      el.querySelector('.ls-history-ack').hidden=true;
-      el.querySelector('.ls-history-phrase').hidden=true;
-      historyMessage('先检查待删范围。');
-      historyReady();
+    const historySetRunning=running=>{
+      historyStartButton.disabled=running;
+      historyCount.disabled=running;
+      for(const radio of el.querySelectorAll('input[name="ls-history-mode"]')) radio.disabled=running;
+      historyStopButton.hidden=!running;
     };
     function closeHistory(){
-      if(historyRunning) {
+      if(historyRunning){
         historyController?.abort();
-        historyMessage('正在停止。当前条目可能已提交删除，请等待核验…');
+        historyMessage('正在停止，当前条目可能已提交，核验后不再继续…');
         return;
       }
       historyController?.abort();
@@ -1459,92 +1438,55 @@
     el.querySelector('.ls-manage-history').addEventListener('click',()=>{
       closeSettings();
       historyEl.hidden=false;
-      invalidateHistory();
+      historyMessage('选择范围后点击开始。');
     });
     el.querySelector('.ls-history-close').addEventListener('click',closeHistory);
-    for (const radio of el.querySelectorAll('input[name="ls-history-mode"]')) radio.addEventListener('change',invalidateHistory);
     historyCount.addEventListener('change',()=>{
       historyCount.value=String(Math.min(500,Math.max(1,Math.floor(Number(historyCount.value)||50))));
       try {if(typeof GM_setValue==='function') GM_setValue(HISTORY_COUNT_KEY,Number(historyCount.value));}
       catch {/* no-op */ }
       try {localStorage.setItem(HISTORY_COUNT_KEY,historyCount.value);}catch {/* no-op */}
-      invalidateHistory();
+      historyMessage('选择范围后点击开始。');
     });
-    historyAck.addEventListener('change',historyReady);
-    historyPhrase.addEventListener('input',historyReady);
     historyStopButton.addEventListener('click',()=>{
       historyController?.abort();
       historyMessage('停止指令已发送；不会继续删除下一条。');
     });
-    historyScanButton.addEventListener('click',async()=>{
-      if (busy || historyRunning) return;
+    historyStartButton.addEventListener('click',async()=>{
+      if(busy || historyRunning) return;
+      const mode=historyMode();
+      const count=Math.min(500,Math.max(1,Math.floor(Number(historyCount.value)||50)));
+      historyCount.value=String(count);
+      try {if(typeof GM_setValue==='function') GM_setValue(HISTORY_COUNT_KEY,count);}catch {/* no-op */}
+      try {localStorage.setItem(HISTORY_COUNT_KEY,String(count));}catch {/* no-op */}
       busy=true;
-      buttons.forEach(b=>b.disabled=true);
-      historyScanButton.disabled=true;
-      historyController=new AbortController();
-      invalidateHistory();
-      try{
-        const mode=historyMode();
-        const count=historyCount.value;
-        historyPlan=await historySnapshot(mode,count,msg=>historyMessage(msg),historyController.signal);
-        historyList.replaceChildren();
-        historyPlan.items.slice(0,8).forEach((item,i)=>{
-          const li=document.createElement('li');
-          li.textContent=(i+1)+'. '+(item.title||'未命名会话');
-          historyList.append(li);
-        });
-        if(historyPlan.items.length>8){
-          const li=document.createElement('li');
-          li.textContent='…另外 '+(historyPlan.items.length-8)+' 条';
-          historyList.append(li);
-        }
-        historyMessage('待删除 '+historyPlan.items.length+' 条'+(mode==='all'?'（当前账户可完整读取的列表）':'（由新到旧）')+'。删除无法撤销。');
-        el.querySelector('.ls-history-ack').hidden=false;
-        el.querySelector('.ls-history-phrase').hidden=mode!=='all';
-      }catch(err){
-        historyMessage('扫描失败：'+String(err?.message||err),true);
-        historyPlan=null;
-      }finally{
-        busy=false;
-        buttons.forEach(b=>b.disabled=false);
-        historyScanButton.disabled=false;
-        historyReady();
-      }
-    });
-    historyConfirm.addEventListener('click',async()=>{
-      if (busy || !historyPlan || historyConfirm.disabled || !historyAck.checked) return;
-      if(historyPlan.mode==='all' && historyPhrase.value.trim()!=='删除全部') return;
-      const plan=historyPlan;
-      const confirmation='将删除当前 LeapSpace 账号中预览的 '+plan.items.length+' 条聊天记录。删除可能不可恢复。确定继续？';
-      if(!window.confirm(confirmation)) return;
       historyRunning=true;
-      busy=true;
       historyController=new AbortController();
+      const signal=historyController.signal;
+      historySetRunning(true);
       buttons.forEach(b=>b.disabled=true);
-      historyScanButton.disabled=true;
-      historyConfirm.disabled=true;
-      historyStopButton.hidden=false;
-      let outcome;
-      try{
-        outcome=await historyExecute(plan,(done,total)=>{
-          historyMessage('已确认删除 '+done+'/'+total+' 条。停止按钮只阻止后续条目。');
-        },historyController.signal);
+      let result=null;
+      let total=0;
+      try {
+        historyMessage('正在扫描并锁定目标会话…');
+        const plan=await historySnapshot(mode,count,msg=>historyMessage(msg),signal);
+        total=plan.items.length;
+        if(signal.aborted) throw new Error('操作已停止。');
+        historyMessage('已锁定 '+total+' 条，正在逐条删除…');
+        result=await historyExecute(plan,(done,size)=>{
+          historyMessage('已确认删除 '+done+'/'+size+' 条。可点击停止。');
+        },signal);
       }catch(err){
-        outcome={completed:0,total:plan.items.length,stopped:true,error:String(err?.message||err)};
+        result={completed:0,total,stopped:true,error:signal.aborted?'':String(err?.message||err)};
       }finally{
         historyRunning=false;
         busy=false;
         buttons.forEach(b=>b.disabled=false);
-        historyStopButton.hidden=true;
-        historyScanButton.disabled=false;
-        // The preview is consumed. A new deletion always requires a fresh scan.
-        historyPlan=null;
-        historyAck.checked=false;
-        historyConfirm.disabled=true;
+        historySetRunning(false);
       }
-      const incomplete=outcome.stopped || outcome.completed!==outcome.total;
-      historyMessage((incomplete?'已停止':'已完成')+'：已确认删除 '+outcome.completed+'/'+outcome.total+' 条。'+
-        (outcome.error?' '+outcome.error:'')+' 如需继续请重新预览。',incomplete);
+      const incomplete=result.stopped||result.completed!==result.total;
+      historyMessage((incomplete?'已停止':'已完成')+'：已确认删除 '+result.completed+'/'+result.total+' 条。'+
+        (result.error?' '+result.error:'')+' 如需继续可再次点击开始。',incomplete);
     });
 
     for (const key of Object.keys(controls)) {
