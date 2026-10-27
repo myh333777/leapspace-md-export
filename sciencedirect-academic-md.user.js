@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/myh333777/leapspace-md-export/issues
 // @updateURL    https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.meta.js
 // @downloadURL  https://raw.githubusercontent.com/myh333777/leapspace-md-export/main/sciencedirect-academic-md.user.js
-// @version      1.6.7
+// @version      1.6.8
 // @description  学术综述 Markdown 导出、完整文献摘要与需预览确认的历史会话批量清理。
 // @author       MYH
 // @match        https://www.sciencedirect.com/leapspace*
@@ -21,7 +21,7 @@
   'use strict';
 
   const APP_ID = 'leapspace-md-exporter';
-  const VERSION = '1.6.7';
+  const VERSION = '1.6.8';
   const ANSWER_SELECTOR = '[class*="_markdown_"]'; // Verified in JUST sciencedirect-researcher-ai Skill.
   const REF_DOT = 'button[data-component="ReferenceDot"]';
   const SHOW_REFS = '[data-testid="show-all-references-button"], button[aria-label*="Show all"][aria-label*="references"]';
@@ -1095,7 +1095,7 @@
 
   async function historyDeleteRowNode(row,item,signal) {
     row.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-    await historyDelay(60,signal);
+    await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 10 : 80,signal);
     const control=historyMenuControl(row);
     if (!control) throw new Error('当前页面未识别会话操作菜单；没有删除任何新的条目。');
     const existingMenus=new Set([...document.querySelectorAll('[role="menu"],[data-radix-menu-content]')].filter(historyVisible));
@@ -1108,20 +1108,14 @@
         control.style.setProperty('pointer-events','auto','important');
       }
       control.click();
-      await historyDelay(120,signal);
-      action=historyDeleteAction(existingMenus);
-      if (!action && control.getAttribute('aria-haspopup')==='menu'
-          && control.getAttribute('aria-expanded')!=='true') {
-        control.dispatchEvent(new PointerEvent('pointerdown',{
-          bubbles:true,composed:true,pointerId:1,pointerType:'mouse',
-          isPrimary:true,button:0,buttons:1
-        }));
-        control.dispatchEvent(new PointerEvent('pointerup',{
-          bubbles:true,composed:true,pointerId:1,pointerType:'mouse',
-          isPrimary:true,button:0,buttons:0
-        }));
-        await historyDelay(120,signal);
-        action=historyDeleteAction(existingMenus);
+      for (let attempt = 0; attempt < 10; attempt++) {
+        action = historyDeleteAction(existingMenus);
+        if (action) break;
+        if (attempt === 1 && control.getAttribute('aria-expanded') !== 'true') {
+          control.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
+          control.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
+        }
+        await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 10 : 90, signal);
       }
       if(!action) throw new Error('未找到唯一的“删除会话”操作，已中止，不会猜测按钮。');
       action.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
@@ -1131,33 +1125,57 @@
       if (action[reactActionKey]?.onClick) {
         try { action[reactActionKey].onClick({ preventDefault(){}, stopPropagation(){} }); } catch {}
       }
-      await historyDelay(150,signal);
+
+      // Explicitly wait for the confirmation modal to mount and stabilize before proceeding
+      let conf = null;
+      for (let attempt = 0; attempt < 25; attempt++) {
+        conf = historyConfirmation();
+        if (conf) break;
+        await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 10 : 100, signal);
+      }
+      if (!conf) throw new Error('未弹出删除确认窗口，已停止。');
+      // Brief pause to allow the modal's entry CSS transition and focus trap to settle
+      await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 10 : 180, signal);
     } finally {
       if (originalStyle===null) control.removeAttribute('style');
       else control.setAttribute('style',originalStyle);
     }
 
-    let modalConfirmed=false;
     const activeId = location.pathname.match(HISTORY_ITEM_RE)?.[1] || '';
-    for(let i=0;i<60;i++) {
-      if(modalConfirmed && (!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id)))) return true;
+    let deleted = false;
+    for (let tick = 0; tick < 60; tick++) {
       if (signal?.aborted) throw new Error('操作已停止。');
-      const conf=historyConfirmation();
-      if(conf && !modalConfirmed) {
-        conf.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
-        conf.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
-        conf.click();
-        const reactConfKey = Object.keys(conf).find(k => k.startsWith('__reactProps') || k.startsWith('__reactEventHandlers'));
-        if (conf[reactConfKey]?.onClick) {
-          try { conf[reactConfKey].onClick({ preventDefault(){}, stopPropagation(){} }); } catch {}
-        }
-        modalConfirmed=true;
-        if(!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id))) return true;
+
+      if (!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id))) {
+        deleted = true;
+        break;
       }
-      await historyDelay(150,signal);
+
+      const liveConf = historyConfirmation();
+      if (liveConf) {
+        // Retry clicking Delete every 4 ticks (~640ms) if the modal remains open
+        if (tick % 4 === 0) {
+          liveConf.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));
+          liveConf.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));
+          liveConf.click();
+          const reactConfKey = Object.keys(liveConf).find(k => k.startsWith('__reactProps') || k.startsWith('__reactEventHandlers'));
+          if (liveConf[reactConfKey]?.onClick) {
+            try { liveConf[reactConfKey].onClick({ preventDefault(){}, stopPropagation(){} }); } catch {}
+          }
+          if (!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id))) {
+            deleted = true;
+            break;
+          }
+        }
+      }
+
+      await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 12 : 160, signal);
     }
-    if(!historyRowById(item.id)) return true;
-    throw new Error('无法确认会话已从列表消失（可能正在等待网站确认），已停止后续删除；请核对当前页面。');
+
+    if (!deleted && (!historyRowById(item.id) || (item.id === activeId && !location.pathname.includes(item.id)))) {
+      deleted = true;
+    }
+    if (!deleted) throw new Error('无法确认会话已从列表消失（可能正在等待网站确认），已停止后续删除；请核对当前页面。');
   }
 
   async function historyDeleteOne(item,signal) {
@@ -1190,9 +1208,9 @@
     for (let step = 0; step < targetCount; step++) {
       if (signal?.aborted) return {completed, total: targetCount, stopped: true};
 
-      // Ensure any previous confirmation dialog is fully unmounted
-      for (let m = 0; m < 20; m++) {
-        if (!historyConfirmation()) break;
+      // Ensure any previous confirmation dialog or backdrop is fully unmounted
+      for (let m = 0; m < 25; m++) {
+        if (!historyConfirmation() && !document.querySelector('div[class*="_modal-overlay_"],div[class*="_overlay-background_"]')) break;
         try {
           await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 10 : 80, signal);
         } catch {
@@ -1232,8 +1250,20 @@
       completed++;
       progress?.(completed, targetCount, topItem);
       if (signal?.aborted) return {completed, total: targetCount, stopped: true};
+
+      // Wait for any remaining dialog/backdrop to fully unmount before next item
+      for (let w = 0; w < 25; w++) {
+        if (!historyConfirmation() && !document.querySelector('div[class*="_modal-overlay_"],div[class*="_overlay-background_"]')) break;
+        try {
+          await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 10 : 80, signal);
+        } catch {
+          return {completed, total: targetCount, stopped: true};
+        }
+      }
+
+      // Safe pacing delay to avoid backend 429 rate limiting and allow list layout stability
       try {
-        await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 15 : 250, signal);
+        await historyDelay(window.__LS_MD_EXPORT_TEST__ ? 15 : 450, signal);
       } catch {
         return {completed, total: targetCount, stopped: true};
       }
